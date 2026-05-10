@@ -71,6 +71,61 @@ HAL_StatusTypeDef FDCAN1_Init(FDCAN_HandleTypeDef *hfdcan)
 }
 
 /**
+ * @brief  FDCAN1 CAN-FD 모드 초기화
+ * @param  hfdcan: FDCAN 핸들러 포인터
+ * @retval HAL_OK = 성공
+ *
+ * @note   Classic CAN과의 차이점:
+ *         - FrameFormat: FDCAN_FRAME_FD_BRS (BRS 활성화)
+ *         - DataPrescaler/DataTimeSeg1/DataTimeSeg2: 데이터 페이스 타이밍
+ *         - 송신 시 FDCAN_BRS_ON, FDCAN_FD_CAN 플래그 사용
+ *
+ *         Classic CAN init과 비교해 변경된 것은 딱 3줄:
+ *         1. FrameFormat → FDCAN_FRAME_FD_BRS
+ *         2. DataPrescaler/DataTimeSeg1/DataTimeSeg2 → 실제 값 설정
+ *         나머지(NominalPrescaler, 필터, FIFO 등)는 동일
+ */
+HAL_StatusTypeDef FDCAN1_InitFD(FDCAN_HandleTypeDef *hfdcan)
+{
+    HAL_StatusTypeDef status;
+
+    /* --- FDCAN 인스턴스 설정 --- */
+    hfdcan->Instance                 = FDCAN1;
+    hfdcan->Init.FrameFormat         = FDCAN_FRAME_FD_BRS;  /* CAN-FD with BRS */
+    hfdcan->Init.Mode                = FDCAN_MODE_NORMAL;
+    hfdcan->Init.AutoRetransmission  = ENABLE;
+    hfdcan->Init.TransmitPause       = DISABLE;
+    hfdcan->Init.ProtocolException   = DISABLE;
+
+    /* --- 아비트레이션 페이스: Classic CAN 500kbps (동일) --- */
+    hfdcan->Init.NominalPrescaler     = FDCAN_PRESCALER;
+    hfdcan->Init.NominalSyncJumpWidth = FDCAN_SJW;
+    hfdcan->Init.NominalTimeSeg1      = FDCAN_TIME_SEG1;
+    hfdcan->Init.NominalTimeSeg2      = FDCAN_TIME_SEG2;
+
+    /* --- 데이터 페이스: 2Mbps (여기가 핵심 변경) --- */
+    hfdcan->Init.DataPrescaler       = FDCAN_DATA_PRESCALER;  /* 1 */
+    hfdcan->Init.DataSyncJumpWidth   = FDCAN_DATA_SJW;       /* 1 */
+    hfdcan->Init.DataTimeSeg1        = FDCAN_DATA_TIME_SEG1;  /* 2 */
+    hfdcan->Init.DataTimeSeg2        = FDCAN_DATA_TIME_SEG2;  /* 1 */
+
+    /* --- 필터 및 FIFO 설정 (Classic CAN과 동일) --- */
+    hfdcan->Init.StdFiltersNbr       = 1U;
+    hfdcan->Init.ExtFiltersNbr       = 0U;
+    hfdcan->Init.TxFifoQueueMode     = FDCAN_TX_FIFO_OPERATION;
+
+    /* --- HAL FDCAN 초기화 --- */
+    status = HAL_FDCAN_Init(hfdcan);
+    if (status != HAL_OK) {
+        Debug_Print("[FDCAN] HAL_FDCAN_Init (FD) failed: %d\r\n", status);
+        return status;
+    }
+
+    Debug_Print("[FDCAN] Init OK - CAN-FD 500kbps/2Mbps (BRS)\r\n");
+    return HAL_OK;
+}
+
+/**
  * @brief  FDCAN1 RX 필터 설정 (CAN ID 0x7E0만 수신)
  * @param  hfdcan: FDCAN 핸들러 포인터
  * @retval HAL_OK = 성공

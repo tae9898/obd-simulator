@@ -60,7 +60,7 @@ extern "C" {
 /* === FDCAN 클럭 설정 === */
 /**
  * FDCAN 클럭 소스: HSE 8MHz (PLLQ가 아닌 HSE 직접 사용)
- * Classic CAN 500kbps 설정:
+ * Classic CAN 500kbps 설정 (아비트레이션 페이스):
  *   bitrate = fcan / (prescaler * (1 + TimeSegment1 + TimeSegment2))
  *   8MHz / (1 * (1 + 13 + 2)) = 500kbps
  */
@@ -69,6 +69,21 @@ extern "C" {
 #define FDCAN_TIME_SEG1       13U
 #define FDCAN_TIME_SEG2       2U
 #define FDCAN_SJW             1U
+
+/* === CAN-FD 데이터 페이스 설정 === */
+/**
+ * CAN-FD 데이터 페이스 2Mbps:
+ *   bitrate = fcan / (prescaler * (1 + TimeSegment1 + TimeSegment2))
+ *   8MHz / (1 * (1 + 2 + 1)) = 8MHz / 4 = 2Mbps
+ *
+ * CAN-FD는 두 개의 비트 전송 속도를 가짐:
+ *   - 아비트레이션 페이스: 기존 500kbps (버스 충돌 판정용)
+ *   - 데이터 페이스: 2Mbps (실제 데이터 전송, BRS 활성화 시에만)
+ */
+#define FDCAN_DATA_PRESCALER  1U
+#define FDCAN_DATA_TIME_SEG1  2U
+#define FDCAN_DATA_TIME_SEG2  1U
+#define FDCAN_DATA_SJW        1U
 
 /* === OBD-II CAN ID 정의 === */
 #define OBD2_REQUEST_ID       0x7E0U

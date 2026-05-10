@@ -27,6 +27,17 @@ extern "C" {
 HAL_StatusTypeDef FDCAN1_Init(FDCAN_HandleTypeDef *hfdcan);
 
 /**
+ * @brief  FDCAN1 CAN-FD 모드 초기화 (아비트레이션 500kbps + 데이터 2Mbps)
+ * @param  hfdcan: FDCAN 핸들러 포인터
+ * @retval HAL 상태 (HAL_OK = 성공)
+ * @note   CAN-FD 모드, BRS(Bit Rate Switch) 활성화
+ *         - 아비트레이션 페이스: Classic 500kbps
+ *         - 데이터 페이스: 2Mbps
+ *         - 최대 DLC: 16바이트 (CAN-FD)
+ */
+HAL_StatusTypeDef FDCAN1_InitFD(FDCAN_HandleTypeDef *hfdcan);
+
+/**
  * @brief  FDCAN1 RX 필터 설정 (CAN ID 0x7E0만 수신)
  * @param  hfdcan: FDCAN 핸들러 포인터
  * @retval HAL 상태
