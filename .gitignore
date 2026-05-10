@@ -1,0 +1,46 @@
+# 빌드 산출물
+build/
+
+# HAL 드라이버 (ST 공식 저장소에서 clone)
+Drivers/STM32G4xx_HAL_Driver/
+Drivers/CMSIS/Device/ST/STM32G4xx/
+Drivers/BSP/
+Drivers/CMSIS/DSP/
+Drivers/CMSIS/docs/
+Drivers/CMSIS/RTOS/
+Drivers/CMSIS/RTOS2/
+Drivers/CMSIS/Source/
+Drivers/CMSIS/Core_A/
+Drivers/CMSIS/Core/
+Drivers/CMSIS/Driver/
+Drivers/CMSIS/Include/
+Drivers/CMSIS/NN/
+Drivers/CMSIS/*.pdsc
+Drivers/CMSIS/LICENSE.txt
+Drivers/CMSIS/README.md
+
+# IDE 설정
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS 파일
+.DS_Store
+Thumbs.db
+
+# 바이너리
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+*.asm
+
+# OMC 상태 파일
+.omc/
+
+# Python 캐시
+__pycache__/
+*.pyc
