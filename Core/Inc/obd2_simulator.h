@@ -44,17 +44,18 @@ typedef struct {
     uint8_t  speed_direction;
 } OBD2_SimState_t;
 
-/* === CAN 메시지 처리 함수 === */
+/* === 순수 로직 API (CAN I/O 없음) === */
 
 /**
- * @brief  수신된 CAN 메시지를 파싱하고 OBD-II 요청을 처리
- * @param  pRxHeader: 수신된 CAN 메시지 헤더 (ID, DLC 등)
- * @param  pRxData:   수신된 CAN 데이터 (최대 8바이트)
- * @retval None
- * @note   FDCAN RX 인터럽트 핸들러에서 호출됨
+ * @brief  OBD-II Mode 01 서비스 핸들러 (순수 로직)
+ * @param  pid:     요청된 PID 번호
+ * @param  pTxData: 응답 데이터 버퍼 (최소 8바이트)
+ * @retval 응답 데이터 길이 (0 = 지원하지 않는 PID)
+ * @note   UDS 디스패처에서 SID 0x01 수신 시 호출됨
+ *         응답 형식: [len, 0x41, PID, data..., 0x00, 0x00, 0x00]
+ *         CAN 송수신 없음 - 호출한 쪽이 전송 담당
  */
-void OBD2_ProcessRequest(const FDCAN_RxHeaderTypeDef *pRxHeader,
-                          const uint8_t *pRxData);
+uint8_t OBD2_HandleService01(uint8_t pid, uint8_t *pTxData);
 
 /**
  * @brief  시뮬레이션 상태 값을 주기적으로 업데이트 (10ms마다 호출)

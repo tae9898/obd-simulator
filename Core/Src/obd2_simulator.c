@@ -5,14 +5,41 @@
  */
 
 #include "obd2_simulator.h"
-#include "fdcan_config.h"
-#include "uart_debug.h"
 #include <string.h>
 
 /* === 시뮬레이션 상태 전역 변수 (정의는 main.c에 있음) === */
 
 /**
- * @brief  수신된 CAN 메시지를 파싱하고 OBD-II 요청 처리
+ * @brief  OBD-II Mode 01 순수 로직 핸들러
+ * @param  pid:     요청된 PID
+ * @param  pTxData: 응답 버퍼 (최소 8바이트)
+ * @retval 응답 길이 (0 = 미지원 PID)
+ * @note   CAN I/O 없음. UDS 디스패처에서 호출됨.
+ */
+uint8_t OBD2_HandleService01(uint8_t pid, uint8_t *pTxData)
+{
+    if (pTxData == NULL) {
+        return 0U;
+    }
+
+    (void)memset(pTxData, 0, 8);
+
+    switch (pid) {
+        case OBD2_PID_SUPPORTED_PIDS:
+            return OBD2_GetSupportedPIDs(pTxData);
+        case OBD2_PID_COOLANT_TEMP:
+            return OBD2_GetCoolantTemp(pTxData, g_sim_state.coolant_temp);
+        case OBD2_PID_ENGINE_RPM:
+            return OBD2_GetEngineRPM(pTxData, g_sim_state.engine_rpm);
+        case OBD2_PID_VEHICLE_SPEED:
+            return OBD2_GetVehicleSpeed(pTxData, g_sim_state.vehicle_speed);
+        default:
+            return 0U;
+    }
+}
+
+/**
+ * @brief  수신된 CAN 메시지를 파싱하고 OBD-II 요청 처리 (Phase 0 호환)
  * @param  pRxHeader: 수신 CAN 메시지 헤더
  * @param  pRxData:   수신 CAN 데이터
  *
@@ -29,78 +56,37 @@ void OBD2_ProcessRequest(const FDCAN_RxHeaderTypeDef *pRxHeader,
 {
     uint8_t  tx_data[8] = {0};
     uint8_t  tx_len     = 0;
-    uint8_t  service_mode;
     uint8_t  pid;
 
-    /* --- 수신 메시지 로그 출력 --- */
-    Debug_LogCAN_Rx(pRxHeader->Identifier, pRxData, pRxHeader->DataLength);
+    /* --- 순수 로직 함수 호출 --- */
+    (void)pRxHeader;  /* Phase 0 호환성: 아직 ISR에서 직접 호출됨 */
 
-    /* --- 데이터 길이 검증 (최소 3바이트: 길이 + 서비스 + PID) --- */
-    /* FDCAN DataLength은 FDCAN_DLC_BYTES_* 형식 (DLC * 0x10000) */
-    if (pRxHeader->DataLength < FDCAN_DLC_BYTES_3) {
-        Debug_Print("[OBD] RX too short: 0x%08lX\r\n",
-                     (unsigned long)pRxHeader->DataLength);
+    if (pRxData == NULL) {
         return;
     }
 
-    /* --- 서비스 모드 파싱 --- */
-    service_mode = pRxData[1];
-
-    /* --- Mode 0x01 (현재 데이터 요청)만 지원 --- */
-    if (service_mode != OBD2_MODE_CURRENT_DATA) {
-        Debug_Print("[OBD] Unsupported mode: 0x%02X\r\n", service_mode);
+    /* 최소 [len, sid, pid] 필요 */
+    if (pRxData[0] < 2U) {
         return;
     }
 
-    /* --- PID 파싱 --- */
     pid = pRxData[2];
+    tx_len = OBD2_HandleService01(pid, tx_data);
 
-    /* --- PID별 응답 생성 --- */
-    switch (pid) {
-        case OBD2_PID_SUPPORTED_PIDS:
-            /* PID 0x00: 지원 PID 목록 (비트맵) */
-            tx_len = OBD2_GetSupportedPIDs(tx_data);
-            break;
-
-        case OBD2_PID_COOLANT_TEMP:
-            /* PID 0x05: 냉각수 온도 */
-            tx_len = OBD2_GetCoolantTemp(tx_data, g_sim_state.coolant_temp);
-            break;
-
-        case OBD2_PID_ENGINE_RPM:
-            /* PID 0x0C: 엔진 RPM */
-            tx_len = OBD2_GetEngineRPM(tx_data, g_sim_state.engine_rpm);
-            break;
-
-        case OBD2_PID_VEHICLE_SPEED:
-            /* PID 0x0D: 차속 */
-            tx_len = OBD2_GetVehicleSpeed(tx_data, g_sim_state.vehicle_speed);
-            break;
-
-        default:
-            /* 지원하지 않는 PID - 응답 없음 */
-            Debug_Print("[OBD] Unsupported PID: 0x%02X\r\n", pid);
-            return;
-    }
-
-    /* --- CAN 응답 전송 --- */
+    /* --- CAN 응답 전송 (Phase 0 호환성 유지) --- */
     if (tx_len > 0U) {
         FDCAN_TxHeaderTypeDef tx_header;
         tx_header.Identifier          = OBD2_RESPONSE_ID;
         tx_header.IdType              = FDCAN_STANDARD_ID;
         tx_header.TxFrameType         = FDCAN_DATA_FRAME;
-        tx_header.DataLength          = FDCAN_DLC_BYTES_8;  /* Classic CAN은 항상 8바이트 DLC */
+        tx_header.DataLength          = FDCAN_DLC_BYTES_8;
         tx_header.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
         tx_header.BitRateSwitch       = FDCAN_BRS_OFF;
         tx_header.FDFormat            = FDCAN_CLASSIC_CAN;
         tx_header.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
         tx_header.MessageMarker       = 0U;
 
-        if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx_header, tx_data) != HAL_OK) {
-            Debug_Print("[OBD] TX FIFO full, response dropped\r\n");
-        } else {
-            Debug_LogCAN_Tx(OBD2_RESPONSE_ID, tx_data, tx_header.DataLength);
-        }
+        HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx_header, tx_data);
     }
 }
 
