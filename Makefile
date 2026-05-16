@@ -21,6 +21,9 @@ Core/Src/main.c \
 Core/Src/obd2_simulator.c \
 Core/Src/fdcan_config.c \
 Core/Src/uart_debug.c \
+Core/Src/iso_tp.c \
+Core/Src/uds_service.c \
+Core/Src/diag_session.c \
 Core/Src/stm32g4xx_hal_msp.c \
 Core/Src/stm32g4xx_it.c \
 Core/Src/system_stm32g4xx.c

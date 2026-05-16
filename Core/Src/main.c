@@ -14,6 +14,9 @@
 #include "obd2_simulator.h"
 #include "fdcan_config.h"
 #include "uart_debug.h"
+#include "iso_tp.h"
+#include "uds_service.h"
+#include "diag_session.h"
 
 /* === 핸들러 전역 변수 === */
 FDCAN_HandleTypeDef hfdcan1;   /* FDCAN1 핸들러 */
@@ -55,13 +58,18 @@ int main(void)
         }
     }
 
-    Debug_Print("[INIT] OBD-II ECU Simulator v1.0\r\n");
+    Debug_Print("[INIT] OBD-II / UDS ECU Simulator v2.0\r\n");
     Debug_Print("[INIT] STM32G431RB Nucleo Board\r\n");
     Debug_Print("[INIT] SYSCLK = %lu MHz\r\n", SYSCLK_FREQ / 1000000U);
 
-    /* --- FDCAN1 초기화 (Classic CAN 500kbps) --- */
-    if (FDCAN1_Init(&hfdcan1) != HAL_OK) {
-        Debug_Print("[ERROR] FDCAN1_Init failed\r\n");
+    /* --- UDS / 세션 / ISO-TP 초기화 --- */
+    DiagSession_Init();
+    UDS_Init();
+    ISO_TP_Init();
+
+    /* --- FDCAN1 초기화 (CAN-FD: 500kbps arb / 2Mbps data) --- */
+    if (FDCAN1_InitFD(&hfdcan1) != HAL_OK) {
+        Debug_Print("[ERROR] FDCAN1_InitFD failed\r\n");
         /* FDCAN 초기화 실패 - LED 빠른 깜빡임 */
         while (1) {
             LED_ON();
@@ -93,9 +101,21 @@ int main(void)
         }
     }
 
-    Debug_Print("[INIT] FDCAN1 ready - Classic CAN 500kbps\r\n");
+    Debug_Print("[INIT] FDCAN1 ready - CAN-FD 500kbps/2Mbps\r\n");
     Debug_Print("[INIT] Listening on CAN ID 0x%03X\r\n", OBD2_REQUEST_ID);
-    Debug_Print("[INIT] Supported PIDs: 0x00, 0x05, 0x0C, 0x0D\r\n");
+    Debug_Print("[INIT] UDS Services: 0x10, 0x11, 0x22, 0x27, 0x31\r\n");
+    Debug_Print("[INIT] OBD-II PIDs: 0x00, 0x05, 0x0C, 0x0D\r\n");
+
+    /* --- FDCAN1 시작 --- */
+    if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK) {
+        Debug_Print("[ERROR] FDCAN1 start failed\r\n");
+        while (1) {
+            LED_ON();
+            HAL_Delay(100);
+            LED_OFF();
+            HAL_Delay(100);
+        }
+    }
 
     /* --- 시뮬레이션 상태 초기값 설정 --- */
     g_sim_state.engine_rpm      = RPM_IDLE;
@@ -115,6 +135,20 @@ int main(void)
     {
         /* --- 시뮬레이션 값 업데이트 (10ms 주기) --- */
         OBD2_UpdateSimValues(&g_sim_state);
+
+        /* --- ISO-TP 타임아웃 처리 (멀티프레임 송수신) --- */
+        ISO_TP_Tick(HAL_GetTick());
+
+        /* --- 세션 S3 타임아웃 처리 (5초 무활동 → Default 복귀) --- */
+        DiagSession_Tick(HAL_GetTick());
+
+        /* --- UDS ECU Reset 처리 --- */
+        if (g_soft_reset_requested) {
+            g_soft_reset_requested = 0U;
+            Debug_Print("[UDS] Soft reset -> NVIC_SystemReset\r\n");
+            HAL_Delay(50);  /* UART 전송 완료 대기 */
+            NVIC_SystemReset();
+        }
 
         /* --- LED 토글 (500ms 주기) --- */
         s_led_tick_counter++;

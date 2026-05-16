@@ -5,11 +5,11 @@
  */
 
 #include "fdcan_config.h"
-#include "obd2_simulator.h"
+#include "iso_tp.h"
 #include "uart_debug.h"
 
-/* === 수신 버퍼 (인터럽트 핸들러에서 사용) === */
-static uint8_t s_rx_data[8];
+/* === 수신 버퍼 (CAN-FD 최대 64바이트) === */
+static uint8_t s_rx_data[64];
 static FDCAN_RxHeaderTypeDef s_rx_header;
 
 /**
@@ -189,32 +189,27 @@ HAL_StatusTypeDef FDCAN1_StartNotification(FDCAN_HandleTypeDef *hfdcan)
 
 /**
  * @brief  FDCAN1 RX FIFO0 새 메시지 콜백 (HAL 등록)
- * @param  hfdcan:     FDCAN 핸들러 포인터
- * @param  RxFifo0ITs: FIFO0 인터럽트 플래그
- * @retval None
  *
  * @note   인터럽트 컨텍스트에서 호출됨:
  *         1. RX FIFO0에서 메시지 읽기
- *         2. OBD2_ProcessRequest()로 요청 처리
- *         3. RX FIFO0 ack (버퍼 해제)
+ *         2. ISO-TP로 프레임 전달 (조립/분할 처리)
+ *         3. 조립 완료 시 UDS 디스패처 → 응답 전송까지 자동
  */
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan,
                                 uint32_t RxFifo0ITs)
 {
     HAL_StatusTypeDef status;
 
-    /* --- 새 메시지 플래그 확인 --- */
     if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) != 0U) {
 
-        /* --- RX FIFO0에서 메시지 읽기 --- */
         status = HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0,
                                          &s_rx_header, s_rx_data);
         if (status == HAL_OK) {
-            /* --- OBD-II 요청 처리 --- */
-            OBD2_ProcessRequest(&s_rx_header, s_rx_data);
+            /* DLC를 바이트 수로 변환해서 ISO-TP에 전달 */
+            uint8_t dlc = (uint8_t)(s_rx_header.DataLength >> 16U);
+            ISO_TP_ProcessFrame(s_rx_header.Identifier, s_rx_data, dlc);
         }
 
-        /* --- RX FIFO0 ack (메시지 처리 완료, 버퍼 해제) --- */
         HAL_FDCAN_ActivateNotification(
             hfdcan,
             FDCAN_IT_RX_FIFO0_NEW_MESSAGE,

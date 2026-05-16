@@ -5,6 +5,7 @@
  */
 
 #include "diag_session.h"
+#include "uds_service.h"
 #include "uart_debug.h"
 #include <string.h>
 
@@ -165,7 +166,7 @@ void DiagSession_Tick(uint32_t now_ms)
  */
 int DiagSession_CheckAccess(uint8_t sid)
 {
-    if (sid == 0x31U) {
+    if (sid == UDS_SID_ROUTINE_CONTROL) {
         if (s_session.session_type != DIAG_SESSION_EXTENDED) {
             return -1;
         }
