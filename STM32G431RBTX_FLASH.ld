@@ -23,7 +23,7 @@ MEMORY
 /* 스택 및 힙 크기 */
 _estack         = ORIGIN(RAM) + LENGTH(RAM);  /* 스택 top = RAM 끝 */
 _Min_Heap_Size  = 0x400 ; /* 최소 힙: 1KB */
-_Min_Stack_Size = 0x400 ; /* 최소 스택: 1KB */
+_Min_Stack_Size = 0x800 ; /* 최소 스택: 2KB (ISO-TP/UDS ISR 처리용) */
 
 /* 섹션 정의 */
 SECTIONS
