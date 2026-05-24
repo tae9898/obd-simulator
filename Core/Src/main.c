@@ -18,6 +18,10 @@
 #include "uds_service.h"
 #include "diag_session.h"
 
+/* === FreeRTOS 헤더 === */
+#include "FreeRTOS.h"
+#include "task.h"
+
 /* === 핸들러 전역 변수 === */
 FDCAN_HandleTypeDef hfdcan1;   /* FDCAN1 핸들러 */
 UART_HandleTypeDef  huart2;    /* USART2 핸들러 (디버그) */
@@ -31,6 +35,7 @@ static uint32_t s_led_tick_counter = 0;
 /* === 함수 프로토타입 === */
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void vMainTask(void *pvParameters);
 
 /**
  * @brief  메인 진입점
@@ -129,24 +134,53 @@ int main(void)
     LED_ON();
 
     /* ========================================
-     * 메인 루프
+     * FreeRTOS 태스크 생성 + 스케줄러 시작
      * ======================================== */
+
+    /*
+     * vMainTask: 기존 메인 루프를 태스크로 이동
+     * - 스택: 512 words = 2048 bytes (ISO-TP 버퍼 + UDS 응답 + printf 고려)
+     * - 우선순위: 2 (기본 작업)
+     */
+    xTaskCreate(vMainTask, "Main", 512, NULL, 2, NULL);
+
+    Debug_Print("[RTOS] Starting FreeRTOS scheduler\r\n");
+    vTaskStartScheduler();
+
+    /* 스케줄러 시작 실패 시 도달 (heap 부족 등) */
+    Debug_Print("[ERROR] Scheduler start failed (heap too small?)\r\n");
+    while (1);
+}
+
+/**
+ * @brief  메인 태스크 - 기존 while(1) 루프와 동일한 동작
+ *
+ * @note   vTaskDelay 사용: HAL_Delay와 달리
+ *         다른 태스크에게 CPU를 양보함 (논블로킹 대기)
+ *         pdMS_TO_TICKS(10) = 10ms를 틱 단위로 변환
+ */
+static void vMainTask(void *pvParameters)
+{
+    (void)pvParameters;
+
+    Debug_Print("[RTOS] Main task started\r\n");
+
     while (1)
     {
         /* --- 시뮬레이션 값 업데이트 (10ms 주기) --- */
         OBD2_UpdateSimValues(&g_sim_state);
 
-        /* --- ISO-TP 타임아웃 처리 (멀티프레임 송수신) --- */
-        ISO_TP_Tick(HAL_GetTick());
+        /* --- ISO-TP 타임아웃 처리 --- */
+        ISO_TP_Tick(xTaskGetTickCount() * portTICK_PERIOD_MS);
 
-        /* --- 세션 S3 타임아웃 처리 (5초 무활동 → Default 복귀) --- */
-        DiagSession_Tick(HAL_GetTick());
+        /* --- 세션 S3 타임아웃 처리 --- */
+        DiagSession_Tick(xTaskGetTickCount() * portTICK_PERIOD_MS);
 
         /* --- UDS ECU Reset 처리 --- */
         if (g_soft_reset_requested) {
             g_soft_reset_requested = 0U;
             Debug_Print("[UDS] Soft reset -> NVIC_SystemReset\r\n");
-            HAL_Delay(50);  /* UART 전송 완료 대기 */
+            vTaskDelay(pdMS_TO_TICKS(50));
             NVIC_SystemReset();
         }
 
@@ -157,9 +191,39 @@ int main(void)
             LED_TOGGLE();
         }
 
-        /* --- 10ms 대기 --- */
-        HAL_Delay(SIM_UPDATE_PERIOD_MS);
+        /* --- 10ms 대기 (다른 태스크에 CPU 양보) --- */
+        vTaskDelay(pdMS_TO_TICKS(SIM_UPDATE_PERIOD_MS));
     }
+}
+
+/* ====================================================
+ * FreeRTOS 훅 함수 (FreeRTOSConfig.h에서 활성화)
+ * ==================================================== */
+
+/**
+ * @brief  스택 오버플로우 감지 시 호출
+ * @note   configCHECK_FOR_STACK_OVERFLOW = 2 로 활성화됨
+ *         태스크 스택이 부족하면 여기서 걸림
+ *         → 해당 태스크의 스택 크기를 늘려야 함
+ */
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    (void)xTask;
+    Debug_Print("[FATAL] Stack overflow in: %s\r\n", pcTaskName);
+    taskDISABLE_INTERRUPTS();
+    while (1);
+}
+
+/**
+ * @brief  pvPortMalloc 실패 시 호출
+ * @note   configTOTAL_HEAP_SIZE가 부족하면 발생
+ *         → configTOTAL_HEAP_SIZE 증가 또는 태스크/큐 수 감소
+ */
+void vApplicationMallocFailedHook(void)
+{
+    Debug_Print("[FATAL] Malloc failed (heap exhausted)\r\n");
+    taskDISABLE_INTERRUPTS();
+    while (1);
 }
 
 /**

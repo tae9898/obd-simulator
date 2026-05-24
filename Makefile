@@ -29,6 +29,21 @@ Core/Src/stm32g4xx_it.c \
 Core/Src/system_stm32g4xx.c
 
 # ============================================
+# FreeRTOS 커널 소스 파일
+# ============================================
+FREERTOS_DIR = Middlewares/FreeRTOS-Kernel
+
+FREERTOS_SOURCES = \
+$(FREERTOS_DIR)/tasks.c \
+$(FREERTOS_DIR)/queue.c \
+$(FREERTOS_DIR)/list.c \
+$(FREERTOS_DIR)/timers.c \
+$(FREERTOS_DIR)/event_groups.c \
+$(FREERTOS_DIR)/stream_buffer.c \
+$(FREERTOS_DIR)/portable/GCC/ARM_CM4F/port.c \
+$(FREERTOS_DIR)/portable/MemMang/heap_4.c
+
+# ============================================
 # HAL 드라이버 소스 파일 (필요한 모듈만 포함)
 # ============================================
 HAL_SOURCES = \
@@ -89,7 +104,9 @@ C_INCLUDES = \
 -IDrivers/CMSIS/Device/ST/STM32G4xx/Include \
 -IDrivers/CMSIS/Include \
 -IDrivers/STM32G4xx_HAL_Driver/Inc \
--IDrivers/STM32G4xx_HAL_Driver/Inc/Legacy
+-IDrivers/STM32G4xx_HAL_Driver/Inc/Legacy \
+-I$(FREERTOS_DIR)/include \
+-I$(FREERTOS_DIR)/portable/GCC/ARM_CM4F
 
 # ============================================
 # 최적화 옵션
@@ -130,8 +147,9 @@ all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).bin $(BUILD_DIR)/$(TARGET
 # ============================================
 C_OBJECTS   = $(addprefix $(BUILD_DIR)/, $(C_SOURCES:.c=.o))
 HAL_OBJECTS = $(addprefix $(BUILD_DIR)/, $(HAL_SOURCES:.c=.o))
+FREERTOS_OBJECTS = $(addprefix $(BUILD_DIR)/, $(FREERTOS_SOURCES:.c=.o))
 ASM_OBJECTS = $(addprefix $(BUILD_DIR)/, $(ASM_SOURCES:.s=.o))
-OBJECTS     = $(C_OBJECTS) $(HAL_OBJECTS) $(ASM_OBJECTS)
+OBJECTS     = $(C_OBJECTS) $(HAL_OBJECTS) $(FREERTOS_OBJECTS) $(ASM_OBJECTS)
 
 # ============================================
 # 의존성 파일 목록
@@ -171,6 +189,14 @@ $(BUILD_DIR)/Drivers/STM32G4xx_HAL_Driver/Src/%.o: Drivers/STM32G4xx_HAL_Driver/
 	@mkdir -p $(dir $@)
 	@echo '컴파일 중 (HAL): $<'
 	$(CC) -std=gnu11 $(CFLAGS) -MMD -MP -MF $(BUILD_DIR)/Drivers/STM32G4xx_HAL_Driver/Src/$*.d -c -o $@ $<
+
+# ============================================
+# FreeRTOS 컴파일 규칙
+# ============================================
+$(BUILD_DIR)/Middlewares/%.o: Middlewares/%.c | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	@echo '컴파일 중 (FreeRTOS): $<'
+	$(CC) -std=gnu11 $(CFLAGS) -MMD -MP -c -o $@ $<
 
 # ============================================
 # 어셈블리 컴파일 규칙
