@@ -14,6 +14,23 @@ extern "C" {
 /* === HAL 헤더 포함 === */
 #include "stm32g4xx_hal.h"
 
+/* === FreeRTOS 헤더 === */
+#include "FreeRTOS.h"
+#include "queue.h"
+
+/* === CAN 수신 메시지 구조체 (ISR → Task 전달용) === */
+typedef struct {
+    uint32_t can_id;        /**< 수신 CAN ID */
+    uint8_t  data[16];      /**< 수신 데이터 (CAN-FD 최대 16바이트) */
+    uint8_t  dlc;           /**< 데이터 길이 */
+} CAN_RxMessage_t;
+
+/** CAN RX Queue 깊이: 동시에 대기 가능한 최대 메시지 수 */
+#define CAN_RX_QUEUE_LEN  8
+
+/** CAN RX Queue 핸들 (ISR과 Task가 공유) */
+extern QueueHandle_t xCanRxQueue;
+
 /* === 핀 정의 === */
 /** FDCAN1 RX - MCP2562FD RXD (PA11) */
 #define FDCAN1_RX_PIN         GPIO_PIN_11

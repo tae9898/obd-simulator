@@ -7,6 +7,7 @@
 #include "fdcan_config.h"
 #include "iso_tp.h"
 #include "uart_debug.h"
+#include <string.h>
 
 /* === 수신 버퍼 (CAN-FD 최대 64바이트) === */
 static uint8_t s_rx_data[64];
@@ -171,6 +172,16 @@ HAL_StatusTypeDef FDCAN1_StartNotification(FDCAN_HandleTypeDef *hfdcan)
 {
     HAL_StatusTypeDef status;
 
+    /*
+     * FDCAN 인터럽트 우선순위를 6으로 설정
+     *
+     * Cortex-M4 NVIC: 숫자가 작을수록 우선순위 높음 (0=최고, 15=최저)
+     * FreeRTOS 규칙: 우선순위 5 이하(0~4)에서는 FromISR API 호출 불가
+     * 우선순위 6이면 FromISR 호출 가능 → Queue 전송 OK
+     */
+    HAL_NVIC_SetPriority(FDCAN1_IT0_IRQn, 6, 0);
+    HAL_NVIC_EnableIRQ(FDCAN1_IT0_IRQn);
+
     /* RX FIFO0 새 메시지 인터럽트 활성화 */
     status = HAL_FDCAN_ActivateNotification(
         hfdcan,
@@ -190,24 +201,41 @@ HAL_StatusTypeDef FDCAN1_StartNotification(FDCAN_HandleTypeDef *hfdcan)
 /**
  * @brief  FDCAN1 RX FIFO0 새 메시지 콜백 (HAL 등록)
  *
- * @note   인터럽트 컨텍스트에서 호출됨:
+ * @note   ISR → Queue → Task 흐름:
  *         1. RX FIFO0에서 메시지 읽기
- *         2. ISO-TP로 프레임 전달 (조립/분할 처리)
- *         3. 조립 완료 시 UDS 디스패처 → 응답 전송까지 자동
+ *         2. CAN_RxMessage_t에 복사
+ *         3. xQueueSendFromISR로 Queue에 전달
+ *         4. 즉시 리턴 (ISR는 최대한 짧게)
+ *
+ *         xQueueSendFromISR: ISR 전용 Queue 전송 함수
+ *         - 일반 xQueueSend은 ISR에서 호출하면 안 됨 (데드락 위험)
+ *         - FromISR 버전은 스케줄러를 직접 깨우지 않고,
+ *           pxHigherPriorityTaskWoken으로 "컨텍스트 스위치 필요"만 표시
+ *         - portYIELD_FROM_ISR이 실제 스위치를 수행
  */
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan,
                                 uint32_t RxFifo0ITs)
 {
     HAL_StatusTypeDef status;
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
     if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) != 0U) {
 
         status = HAL_FDCAN_GetRxMessage(hfdcan, FDCAN_RX_FIFO0,
                                          &s_rx_header, s_rx_data);
         if (status == HAL_OK) {
-            /* DLC를 바이트 수로 변환해서 ISO-TP에 전달 */
-            uint8_t dlc = (uint8_t)(s_rx_header.DataLength >> 16U);
-            ISO_TP_ProcessFrame(s_rx_header.Identifier, s_rx_data, dlc);
+            CAN_RxMessage_t rx_msg;
+            rx_msg.can_id = s_rx_header.Identifier;
+            rx_msg.dlc    = (uint8_t)(s_rx_header.DataLength >> 16U);
+
+            /* data 배열 복사 (최대 16바이트) */
+            (void)memset(rx_msg.data, 0, sizeof(rx_msg.data));
+            for (uint8_t i = 0U; i < rx_msg.dlc && i < 16U; i++) {
+                rx_msg.data[i] = s_rx_data[i];
+            }
+
+            /* Queue에 전송 (ISR 전용 함수) */
+            xQueueSendFromISR(xCanRxQueue, &rx_msg, &xHigherPriorityTaskWoken);
         }
 
         HAL_FDCAN_ActivateNotification(
@@ -215,5 +243,8 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan,
             FDCAN_IT_RX_FIFO0_NEW_MESSAGE,
             0U
         );
+
+        /* Queue 수신 태스크가 더 높은 우선순위면 즉시 스위치 */
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
     }
 }

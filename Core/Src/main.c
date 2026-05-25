@@ -29,6 +29,9 @@ UART_HandleTypeDef  huart2;    /* USART2 핸들러 (디버그) */
 /* === 시뮬레이션 상태 전역 변수 === */
 OBD2_SimState_t g_sim_state;
 
+/* === CAN RX Queue (ISR → Task 전달) === */
+QueueHandle_t xCanRxQueue = NULL;
+
 /* === LED 토글 카운터 === */
 static uint32_t s_led_tick_counter = 0;
 
@@ -36,6 +39,7 @@ static uint32_t s_led_tick_counter = 0;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void vMainTask(void *pvParameters);
+static void vCanRxTask(void *pvParameters);
 
 /**
  * @brief  메인 진입점
@@ -134,15 +138,30 @@ int main(void)
     LED_ON();
 
     /* ========================================
-     * FreeRTOS 태스크 생성 + 스케줄러 시작
+     * FreeRTOS 객체 생성 + 태스크 시작
      * ======================================== */
+
+    /* --- CAN RX Queue 생성 --- */
+    xCanRxQueue = xQueueCreate(CAN_RX_QUEUE_LEN, sizeof(CAN_RxMessage_t));
+    if (xCanRxQueue == NULL) {
+        Debug_Print("[ERROR] CAN RX Queue create failed\r\n");
+        while (1);
+    }
+    Debug_Print("[RTOS] CAN RX Queue created (depth=%u)\r\n", CAN_RX_QUEUE_LEN);
 
     /*
      * vMainTask: 기존 메인 루프를 태스크로 이동
-     * - 스택: 512 words = 2048 bytes (ISO-TP 버퍼 + UDS 응답 + printf 고려)
+     * - 스택: 512 words = 2048 bytes
      * - 우선순위: 2 (기본 작업)
      */
     xTaskCreate(vMainTask, "Main", 512, NULL, 2, NULL);
+
+    /*
+     * vCanRxTask: CAN 수신 메시지를 Queue에서 꺼내서 ISO-TP/UDS 처리
+     * - 스택: 768 words = 3072 bytes (ISO-TP 버퍼 64B + UDS 응답 64B + printf 256B)
+     * - 우선순위: 3 (Main보다 높음 → CAN 메시지 처리 우선)
+     */
+    xTaskCreate(vCanRxTask, "CANRx", 768, NULL, 3, NULL);
 
     Debug_Print("[RTOS] Starting FreeRTOS scheduler\r\n");
     vTaskStartScheduler();
@@ -193,6 +212,31 @@ static void vMainTask(void *pvParameters)
 
         /* --- 10ms 대기 (다른 태스크에 CPU 양보) --- */
         vTaskDelay(pdMS_TO_TICKS(SIM_UPDATE_PERIOD_MS));
+    }
+}
+
+/**
+ * @brief  CAN 수신 태스크
+ *
+ * Queue에서 CAN 메시지를 꺼내서 ISO-TP → UDS 처리를 수행.
+ * 기존에 ISR 안에서 하던 작업을 이 태스크로 이동.
+ *
+ * xQueueReceive: Queue에 데이터가 없으면 대기 (CPU 소비 없음)
+ *                ISR가 xQueueSendFromISR로 데이터를 넣으면 즉시 깨어남
+ */
+static void vCanRxTask(void *pvParameters)
+{
+    (void)pvParameters;
+    CAN_RxMessage_t rx_msg;
+
+    Debug_Print("[RTOS] CAN-Rx task started\r\n");
+
+    while (1)
+    {
+        /* Queue에서 메시지 대기 (무한 대기, CPU 양보) */
+        if (xQueueReceive(xCanRxQueue, &rx_msg, portMAX_DELAY) == pdTRUE) {
+            ISO_TP_ProcessFrame(rx_msg.can_id, rx_msg.data, rx_msg.dlc);
+        }
     }
 }
 
