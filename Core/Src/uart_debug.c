@@ -88,8 +88,17 @@ void Debug_Print(const char *fmt, ...)
         len++;
     }
 
+    /* Mutex로 UART 보호 (스케줄러 시작 전에는 xUartMutex == NULL) */
+    if (xUartMutex != NULL) {
+        xSemaphoreTake(xUartMutex, portMAX_DELAY);
+    }
+
     /* USART2로 전송 */
     HAL_UART_Transmit(&huart2, (uint8_t *)buf, len, HAL_MAX_DELAY);
+
+    if (xUartMutex != NULL) {
+        xSemaphoreGive(xUartMutex);
+    }
 }
 
 /**
@@ -100,13 +109,17 @@ void Debug_Print(const char *fmt, ...)
  */
 void Debug_LogCAN_Rx(uint32_t id, const uint8_t *data, uint32_t len)
 {
-    uint32_t i;
+    char buf[256];
+    int pos = 0;
 
-    Debug_Print("[CAN] RX ID:0x%03lX DLC:%lu Data:", id, len);
-    for (i = 0U; i < len; i++) {
-        Debug_Print(" %02X", data[i]);
+    pos += snprintf(buf + pos, sizeof(buf) - pos,
+                    "[CAN] RX ID:0x%03lX DLC:%lu Data:", id, len);
+    for (uint32_t i = 0U; i < len && pos < (int)(sizeof(buf) - 4); i++) {
+        pos += snprintf(buf + pos, sizeof(buf) - pos, " %02X", data[i]);
     }
-    Debug_Print("\r\n");
+    snprintf(buf + pos, sizeof(buf) - pos, "\r\n");
+
+    Debug_Print("%s", buf);
 }
 
 /**
@@ -117,11 +130,15 @@ void Debug_LogCAN_Rx(uint32_t id, const uint8_t *data, uint32_t len)
  */
 void Debug_LogCAN_Tx(uint32_t id, const uint8_t *data, uint32_t len)
 {
-    uint32_t i;
+    char buf[256];
+    int pos = 0;
 
-    Debug_Print("[CAN] TX ID:0x%03lX DLC:%lu Data:", id, len);
-    for (i = 0U; i < len; i++) {
-        Debug_Print(" %02X", data[i]);
+    pos += snprintf(buf + pos, sizeof(buf) - pos,
+                    "[CAN] TX ID:0x%03lX DLC:%lu Data:", id, len);
+    for (uint32_t i = 0U; i < len && pos < (int)(sizeof(buf) - 4); i++) {
+        pos += snprintf(buf + pos, sizeof(buf) - pos, " %02X", data[i]);
     }
-    Debug_Print("\r\n");
+    snprintf(buf + pos, sizeof(buf) - pos, "\r\n");
+
+    Debug_Print("%s", buf);
 }

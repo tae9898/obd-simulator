@@ -17,6 +17,7 @@ extern "C" {
 /* === FreeRTOS 헤더 === */
 #include "FreeRTOS.h"
 #include "queue.h"
+#include "semphr.h"
 
 /* === CAN 수신 메시지 구조체 (ISR → Task 전달용) === */
 typedef struct {
@@ -30,6 +31,9 @@ typedef struct {
 
 /** CAN RX Queue 핸들 (ISR과 Task가 공유) */
 extern QueueHandle_t xCanRxQueue;
+
+/** UART Mutex 핸들 (Debug_Print 스레드 안전성 보장) */
+extern SemaphoreHandle_t xUartMutex;
 
 /* === 핀 정의 === */
 /** FDCAN1 RX - MCP2562FD RXD (PA11) */

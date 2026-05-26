@@ -32,6 +32,9 @@ OBD2_SimState_t g_sim_state;
 /* === CAN RX Queue (ISR → Task 전달) === */
 QueueHandle_t xCanRxQueue = NULL;
 
+/* === UART Mutex (Debug_Print 스레드 안전성) === */
+SemaphoreHandle_t xUartMutex = NULL;
+
 /* === LED 토글 카운터 === */
 static uint32_t s_led_tick_counter = 0;
 
@@ -148,6 +151,14 @@ int main(void)
         while (1);
     }
     Debug_Print("[RTOS] CAN RX Queue created (depth=%u)\r\n", CAN_RX_QUEUE_LEN);
+
+    /* --- UART Mutex 생성 (Debug_Print 스레드 안전성) --- */
+    xUartMutex = xSemaphoreCreateMutex();
+    if (xUartMutex == NULL) {
+        Debug_Print("[ERROR] UART Mutex create failed\r\n");
+        while (1);
+    }
+    Debug_Print("[RTOS] UART Mutex created\r\n");
 
     /*
      * vMainTask: 기존 메인 루프를 태스크로 이동
