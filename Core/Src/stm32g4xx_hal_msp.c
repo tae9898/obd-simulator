@@ -5,6 +5,7 @@
  */
 
 #include "main.h"
+#include "rs485.h"
 
 /**
  * @brief  FDCAN1 MSP 초기화 (HAL_FDCAN_Init에서 자동 호출)
@@ -102,6 +103,37 @@ void HAL_UART_MspInit(UART_HandleTypeDef *huart)
         GPIO_InitStruct.Alternate = USART2_RX_AF;  /* AF7 */
         HAL_GPIO_Init(USART2_RX_PORT, &GPIO_InitStruct);
     }
+    else if (huart->Instance == USART1) {
+        /* --- USART1 클럭 활성화 --- */
+        __HAL_RCC_USART1_CLK_ENABLE();
+
+        /* --- USART1 GPIO 클럭 활성화 --- */
+        __HAL_RCC_GPIOA_CLK_ENABLE();
+
+        /* --- USART1_TX (PA9) GPIO 설정 --- */
+        GPIO_InitStruct.Pin       = RS485_TX_PIN;
+        GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
+        GPIO_InitStruct.Pull      = GPIO_NOPULL;
+        GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+        GPIO_InitStruct.Alternate = RS485_TX_AF;  /* AF7 */
+        HAL_GPIO_Init(RS485_TX_PORT, &GPIO_InitStruct);
+
+        /* --- USART1_RX (PA10) GPIO 설정 --- */
+        GPIO_InitStruct.Pin       = RS485_RX_PIN;
+        GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
+        GPIO_InitStruct.Pull      = GPIO_PULLUP;
+        GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
+        GPIO_InitStruct.Alternate = RS485_RX_AF;  /* AF7 */
+        HAL_GPIO_Init(RS485_RX_PORT, &GPIO_InitStruct);
+
+        /* --- MAX485 DE/RE (PA8) GPIO 출력 설정 --- */
+        GPIO_InitStruct.Pin       = RS485_DE_PIN;
+        GPIO_InitStruct.Mode      = GPIO_MODE_OUTPUT_PP;
+        GPIO_InitStruct.Pull      = GPIO_NOPULL;
+        GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_HIGH;
+        HAL_GPIO_Init(RS485_DE_PORT, &GPIO_InitStruct);
+        RS485_DE_LOW();  /* 초기: 수신 모드 */
+    }
 }
 
 /**
@@ -118,5 +150,12 @@ void HAL_UART_MspDeInit(UART_HandleTypeDef *huart)
 
         /* USART2 클럭 비활성화 */
         __HAL_RCC_USART2_CLK_DISABLE();
+    }
+    else if (huart->Instance == USART1) {
+        HAL_GPIO_DeInit(RS485_TX_PORT, RS485_TX_PIN);
+        HAL_GPIO_DeInit(RS485_RX_PORT, RS485_RX_PIN);
+        HAL_GPIO_DeInit(RS485_DE_PORT, RS485_DE_PIN);
+
+        __HAL_RCC_USART1_CLK_DISABLE();
     }
 }

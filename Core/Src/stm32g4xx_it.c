@@ -49,3 +49,12 @@ void SysTick_Handler(void)
         xPortSysTickHandler();
     }
 }
+
+/**
+ * @brief  USART1 인터럽트 핸들러 (RS485 수신)
+ * @note   우선순위 7 (FDCAN=6보다 낮음, FreeRTOS API 호출 가능)
+ */
+void USART1_IRQHandler(void)
+{
+    HAL_UART_IRQHandler(&huart1);
+}

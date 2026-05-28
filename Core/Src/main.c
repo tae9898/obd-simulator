@@ -17,6 +17,7 @@
 #include "iso_tp.h"
 #include "uds_service.h"
 #include "diag_session.h"
+#include "rs485.h"
 
 /* === FreeRTOS 헤더 === */
 #include "FreeRTOS.h"
@@ -25,6 +26,7 @@
 /* === 핸들러 전역 변수 === */
 FDCAN_HandleTypeDef hfdcan1;   /* FDCAN1 핸들러 */
 UART_HandleTypeDef  huart2;    /* USART2 핸들러 (디버그) */
+UART_HandleTypeDef  huart1;    /* USART1 핸들러 (RS485) */
 
 /* === 시뮬레이션 상태 전역 변수 === */
 OBD2_SimState_t g_sim_state;
@@ -35,6 +37,9 @@ QueueHandle_t xCanRxQueue = NULL;
 /* === UART Mutex (Debug_Print 스레드 안전성) === */
 SemaphoreHandle_t xUartMutex = NULL;
 
+/* === RS485 RX Queue (ISR → Task 전달) === */
+QueueHandle_t xRS485RxQueue = NULL;
+
 /* === LED 토글 카운터 === */
 static uint32_t s_led_tick_counter = 0;
 
@@ -43,6 +48,7 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void vMainTask(void *pvParameters);
 static void vCanRxTask(void *pvParameters);
+static void vRS485Task(void *pvParameters);
 
 /**
  * @brief  메인 진입점
@@ -118,6 +124,17 @@ int main(void)
     Debug_Print("[INIT] UDS Services: 0x10, 0x11, 0x22, 0x27, 0x31\r\n");
     Debug_Print("[INIT] OBD-II PIDs: 0x00, 0x05, 0x0C, 0x0D\r\n");
 
+    /* --- RS485 초기화 (USART1 + MAX485 DE/RE) --- */
+    if (RS485_Init() != HAL_OK) {
+        Debug_Print("[ERROR] RS485 init failed\r\n");
+        while (1) {
+            LED_ON();
+            HAL_Delay(400);
+            LED_OFF();
+            HAL_Delay(400);
+        }
+    }
+
     /* --- FDCAN1 시작 --- */
     if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK) {
         Debug_Print("[ERROR] FDCAN1 start failed\r\n");
@@ -160,6 +177,14 @@ int main(void)
     }
     Debug_Print("[RTOS] UART Mutex created\r\n");
 
+    /* --- RS485 RX Queue 생성 --- */
+    xRS485RxQueue = xQueueCreate(RS485_RX_QUEUE_LEN, sizeof(RS485_RxMessage_t));
+    if (xRS485RxQueue == NULL) {
+        Debug_Print("[ERROR] RS485 RX Queue create failed\r\n");
+        while (1);
+    }
+    Debug_Print("[RTOS] RS485 RX Queue created (depth=%u)\r\n", RS485_RX_QUEUE_LEN);
+
     /*
      * vMainTask: 기존 메인 루프를 태스크로 이동
      * - 스택: 512 words = 2048 bytes
@@ -173,6 +198,13 @@ int main(void)
      * - 우선순위: 3 (Main보다 높음 → CAN 메시지 처리 우선)
      */
     xTaskCreate(vCanRxTask, "CANRx", 768, NULL, 3, NULL);
+
+    /*
+     * vRS485Task: RS485 수신 메시지를 Queue에서 꺼내서 처리
+     * - 스택: 384 words = 1536 bytes
+     * - 우선순위: 2 (Main과 동일, CAN-Rx보다 낮음)
+     */
+    xTaskCreate(vRS485Task, "RS485", 384, NULL, 2, NULL);
 
     Debug_Print("[RTOS] Starting FreeRTOS scheduler\r\n");
     vTaskStartScheduler();
@@ -247,6 +279,31 @@ static void vCanRxTask(void *pvParameters)
         /* Queue에서 메시지 대기 (무한 대기, CPU 양보) */
         if (xQueueReceive(xCanRxQueue, &rx_msg, portMAX_DELAY) == pdTRUE) {
             ISO_TP_ProcessFrame(rx_msg.can_id, rx_msg.data, rx_msg.dlc);
+        }
+    }
+}
+
+/**
+ * @brief  RS485 수신 태스크
+ *
+ * Queue에서 RS485 메시지를 꺼내서 처리.
+ * 향후 CAN↔RS485 메시지 라우팅 로직이 여기에 추가됨.
+ */
+static void vRS485Task(void *pvParameters)
+{
+    (void)pvParameters;
+    RS485_RxMessage_t rx_msg;
+
+    Debug_Print("[RTOS] RS485 task started\r\n");
+
+    while (1)
+    {
+        if (xQueueReceive(xRS485RxQueue, &rx_msg, portMAX_DELAY) == pdTRUE) {
+            Debug_Print("[RS485] RX %u bytes:", rx_msg.len);
+            for (uint8_t i = 0; i < rx_msg.len; i++) {
+                Debug_Print(" %02X", rx_msg.data[i]);
+            }
+            Debug_Print("\r\n");
         }
     }
 }

@@ -63,6 +63,12 @@ extern SemaphoreHandle_t xUartMutex;
 #define LED_OFF()             HAL_GPIO_WritePin(LED_PORT, LED_PIN, GPIO_PIN_SET)
 #define LED_TOGGLE()          HAL_GPIO_TogglePin(LED_PORT, LED_PIN)
 
+/** RS485 DE/RE 방향 제어 (PA8, MAX485) — HIGH=송신, LOW=수신 */
+#define RS485_DE_PIN          GPIO_PIN_8
+#define RS485_DE_PORT         GPIOA
+#define RS485_DE_HIGH()       HAL_GPIO_WritePin(RS485_DE_PORT, RS485_DE_PIN, GPIO_PIN_SET)
+#define RS485_DE_LOW()        HAL_GPIO_WritePin(RS485_DE_PORT, RS485_DE_PIN, GPIO_PIN_RESET)
+
 /* === 클럭 설정 상수 === */
 /* HSE_VALUE, HSI_VALUE는 stm32g4xx_hal_conf.h에서 정의됨 */
 
@@ -137,7 +143,8 @@ extern SemaphoreHandle_t xUartMutex;
 
 /* === 외부 변수 (다른 소스에서 참조) === */
 extern FDCAN_HandleTypeDef hfdcan1;
-extern UART_HandleTypeDef huart2;
+extern UART_HandleTypeDef  huart2;
+extern UART_HandleTypeDef  huart1;
 
 #ifdef __cplusplus
 }
