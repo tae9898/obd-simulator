@@ -91,6 +91,37 @@ HAL_StatusTypeDef RS485_SendData(const uint8_t *data, uint16_t len)
 }
 
 /**
+ * @brief  CAN 메시지를 RS485로 포워딩 (CAN→RS485 라우팅)
+ * @param  can_id: CAN ID (11-bit)
+ * @param  data:   CAN 데이터
+ * @param  dlc:    데이터 길이
+ * @retval HAL 상태
+ *
+ * @note   RS485 프레임 포맷:
+ *         [ID_H] [ID_L] [DLC] [DATA 0..N]
+ *         ID_H = (can_id >> 8) & 0xFF  (상위 3비트, 11-bit ID)
+ *         ID_L = can_id & 0xFF          (하위 8비트)
+ *         DLC  = 데이터 길이 (0~8)
+ *         DATA = CAN 페이로드
+ */
+HAL_StatusTypeDef RS485_ForwardCANMessage(uint32_t can_id, const uint8_t *data, uint8_t dlc)
+{
+    uint8_t frame[11];  /* 최대: 2(ID) + 1(DLC) + 8(DATA) = 11바이트 */
+    uint8_t pos = 0;
+
+    frame[pos++] = (uint8_t)((can_id >> 8) & 0xFF);  /* ID 상위 */
+    frame[pos++] = (uint8_t)(can_id & 0xFF);           /* ID 하위 */
+    frame[pos++] = dlc;
+
+    for (uint8_t i = 0; i < dlc && i < 8; i++) {
+        frame[pos++] = data[i];
+    }
+
+    Debug_Print("[ROUTE] CAN→RS485 ID:0x%03lX DLC:%u\r\n", can_id, dlc);
+    return RS485_SendData(frame, pos);
+}
+
+/**
  * @brief  UART 수신 완료 콜백 (HAL 공유)
  *
  * @note   USART1 인터럽트 기반 수신:

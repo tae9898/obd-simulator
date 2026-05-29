@@ -278,7 +278,11 @@ static void vCanRxTask(void *pvParameters)
     {
         /* Queue에서 메시지 대기 (무한 대기, CPU 양보) */
         if (xQueueReceive(xCanRxQueue, &rx_msg, portMAX_DELAY) == pdTRUE) {
+            /* ISO-TP → UDS 처리 */
             ISO_TP_ProcessFrame(rx_msg.can_id, rx_msg.data, rx_msg.dlc);
+
+            /* CAN→RS485 포워딩 (RPi4로 전달) */
+            RS485_ForwardCANMessage(rx_msg.can_id, rx_msg.data, rx_msg.dlc);
         }
     }
 }
@@ -299,11 +303,28 @@ static void vRS485Task(void *pvParameters)
     while (1)
     {
         if (xQueueReceive(xRS485RxQueue, &rx_msg, portMAX_DELAY) == pdTRUE) {
-            Debug_Print("[RS485] RX %u bytes:", rx_msg.len);
-            for (uint8_t i = 0; i < rx_msg.len; i++) {
-                Debug_Print(" %02X", rx_msg.data[i]);
+            /* 최소 프레임 길이 확인: ID(2) + DLC(1) = 3바이트 */
+            if (rx_msg.len >= 3) {
+                uint32_t can_id = ((uint32_t)rx_msg.data[0] << 8) | rx_msg.data[1];
+                uint8_t  dlc    = rx_msg.data[2];
+
+                if (dlc <= 8 && (3 + dlc) <= rx_msg.len) {
+                    /* RS485→CAN 포워딩 */
+                    FDCAN_TxHeaderTypeDef tx_header = {0};
+                    tx_header.Identifier          = can_id;
+                    tx_header.IdType              = FDCAN_STANDARD_ID;
+                    tx_header.TxFrameType         = FDCAN_DATA_FRAME;
+                    tx_header.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+                    tx_header.BitRateSwitch       = FDCAN_BRS_OFF;
+                    tx_header.FDFormat            = FDCAN_CLASSIC_CAN;
+                    tx_header.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
+                    tx_header.MessageMarker       = 0U;
+
+                    if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx_header, &rx_msg.data[3]) == HAL_OK) {
+                        Debug_Print("[ROUTE] RS485→CAN ID:0x%03lX DLC:%u\r\n", can_id, dlc);
+                    }
+                }
             }
-            Debug_Print("\r\n");
         }
     }
 }

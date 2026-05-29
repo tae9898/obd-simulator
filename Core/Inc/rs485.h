@@ -61,6 +61,16 @@ HAL_StatusTypeDef RS485_Init(void);
  */
 HAL_StatusTypeDef RS485_SendData(const uint8_t *data, uint16_t len);
 
+/**
+ * @brief  CAN 메시지를 RS485로 포워딩 (CAN→RS485 라우팅)
+ * @param  can_id: CAN ID (11-bit)
+ * @param  data:   CAN 데이터
+ * @param  dlc:    데이터 길이
+ * @retval HAL 상태
+ * @note   RS485 프레임 포맷: [ID_H][ID_L][DLC][DATA 0..N]
+ */
+HAL_StatusTypeDef RS485_ForwardCANMessage(uint32_t can_id, const uint8_t *data, uint8_t dlc);
+
 #ifdef __cplusplus
 }
 #endif
