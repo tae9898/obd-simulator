@@ -43,6 +43,9 @@ QueueHandle_t xRS485RxQueue = NULL;
 /* === LED 토글 카운터 === */
 static uint32_t s_led_tick_counter = 0;
 
+/* === 루프백 수신 카운터 === */
+volatile uint32_t g_loopback_rx_count = 0;
+
 /* === 함수 프로토타입 === */
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
@@ -85,8 +88,39 @@ int main(void)
     UDS_Init();
     ISO_TP_Init();
 
-    /* --- FDCAN1 초기화 (CAN-FD: 500kbps arb / 2Mbps data) --- */
-    if (FDCAN1_InitFD(&hfdcan1) != HAL_OK) {
+    /* === MCP2562FD CANH/CANL 핀 출력 테스트 === */
+    {
+        GPIO_InitTypeDef gpio_test = {0};
+
+        /* PA12 = GPIO 출력 (MCP2562FD TXD 핀 구동) */
+        gpio_test.Pin   = GPIO_PIN_12;
+        gpio_test.Mode  = GPIO_MODE_OUTPUT_PP;
+        gpio_test.Pull  = GPIO_NOPULL;
+        gpio_test.Speed = GPIO_SPEED_FREQ_HIGH;
+        HAL_GPIO_Init(GPIOA, &gpio_test);
+
+        /* Test 1: TXD=LOW (dominant) → CANH≈3.5V, CANL≈1.5V → 차이≈2V */
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_12, GPIO_PIN_RESET);
+        Debug_Print("[PIN-TEST] TXD=LOW (dominant) for 10 sec\r\n");
+        Debug_Print("[PIN-TEST] Measure CANH(pin7) - CANL(pin6) voltage NOW!\r\n");
+        Debug_Print("[PIN-TEST] Expected: ~2.0V difference (CANH > CANL)\r\n");
+        HAL_Delay(10000);
+
+        /* Test 2: TXD=HIGH (recessive) → CANH≈CANL≈2.5V → 차이≈0V */
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_12, GPIO_PIN_SET);
+        Debug_Print("[PIN-TEST] TXD=HIGH (recessive) for 10 sec\r\n");
+        Debug_Print("[PIN-TEST] Measure CANH(pin7) - CANL(pin6) voltage NOW!\r\n");
+        Debug_Print("[PIN-TEST] Expected: ~0.0V difference (both ~2.5V)\r\n");
+        HAL_Delay(10000);
+
+        /* GPIO 복원 */
+        HAL_GPIO_DeInit(GPIOA, GPIO_PIN_12);
+
+        Debug_Print("[PIN-TEST] Done. If CANH-CANL voltage was 2V then 0V, pins OK!\r\n");
+    }
+
+    /* --- FDCAN1 초기화 (Classic CAN: 500kbps) --- */
+    if (FDCAN1_Init(&hfdcan1) != HAL_OK) {
         Debug_Print("[ERROR] FDCAN1_InitFD failed\r\n");
         /* FDCAN 초기화 실패 - LED 빠른 깜빡임 */
         while (1) {
@@ -119,7 +153,7 @@ int main(void)
         }
     }
 
-    Debug_Print("[INIT] FDCAN1 ready - CAN-FD 500kbps/2Mbps\r\n");
+    Debug_Print("[INIT] FDCAN1 ready - Classic CAN 500kbps\r\n");
     Debug_Print("[INIT] Listening on CAN ID 0x%03X\r\n", OBD2_REQUEST_ID);
     Debug_Print("[INIT] UDS Services: 0x10, 0x11, 0x22, 0x27, 0x31\r\n");
     Debug_Print("[INIT] OBD-II PIDs: 0x00, 0x05, 0x0C, 0x0D\r\n");
@@ -143,6 +177,26 @@ int main(void)
             HAL_Delay(100);
             LED_OFF();
             HAL_Delay(100);
+        }
+    }
+
+    /* --- FDCAN 디버그: 클럭 및 상태 확인 --- */
+    {
+        uint32_t fdcan_clk = HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_FDCAN);
+        Debug_Print("[FDCAN-DBG] Kernel clock = %lu Hz\r\n", fdcan_clk);
+        Debug_Print("[FDCAN-DBG] Expected: 8000000 Hz (HSE 8MHz)\r\n");
+
+        uint32_t ecr = hfdcan1.Instance->ECR;
+        uint32_t psr = hfdcan1.Instance->PSR;
+        Debug_Print("[FDCAN-DBG] ECR=0x%08lX PSR=0x%08lX\r\n", ecr, psr);
+        Debug_Print("[FDCAN-DBG] TEC=%lu REC=%lu\r\n",
+                    (ecr >> 16) & 0xFF, (ecr >> 8) & 0xFF);
+
+        /* HSE가 실제로 켜져 있는지 확인 */
+        if (__HAL_RCC_GET_FLAG(RCC_FLAG_HSERDY)) {
+            Debug_Print("[FDCAN-DBG] HSE READY = YES\r\n");
+        } else {
+            Debug_Print("[FDCAN-DBG] HSE READY = NO !!! FDCAN clock wrong!\r\n");
         }
     }
 
@@ -224,6 +278,20 @@ int main(void)
 static void vMainTask(void *pvParameters)
 {
     (void)pvParameters;
+    uint8_t test_counter = 0;
+    FDCAN_TxHeaderTypeDef tx_header = {0};
+    uint8_t test_data[8] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x00};
+
+    /* CAN TX 테스트용 헤더 */
+    tx_header.Identifier          = 0x7E8U;
+    tx_header.IdType              = FDCAN_STANDARD_ID;
+    tx_header.TxFrameType         = FDCAN_DATA_FRAME;
+    tx_header.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+    tx_header.BitRateSwitch       = FDCAN_BRS_OFF;
+    tx_header.FDFormat            = FDCAN_CLASSIC_CAN;
+    tx_header.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
+    tx_header.MessageMarker       = 0U;
+    tx_header.DataLength          = FDCAN_DLC_BYTES_8;
 
     Debug_Print("[RTOS] Main task started\r\n");
 
@@ -251,6 +319,88 @@ static void vMainTask(void *pvParameters)
         if (s_led_tick_counter >= (LED_TOGGLE_PERIOD_MS / SIM_UPDATE_PERIOD_MS)) {
             s_led_tick_counter = 0;
             LED_TOGGLE();
+
+            /* --- FDCAN 내부 루프백: OBD-II 요청 → UDS 처리 --- */
+            if (test_counter == 1 || test_counter == 4 || test_counter == 7) {
+                /* RX 인터럽트 비활성화 (폴링 모드) */
+                HAL_FDCAN_DeactivateNotification(&hfdcan1, FDCAN_IT_RX_FIFO0_NEW_MESSAGE);
+
+                uint8_t obd_request[8] = {0};
+                if (test_counter == 1) {
+                    /* PID 0x0C (RPM) */
+                    obd_request[0] = 0x02; obd_request[1] = 0x01; obd_request[2] = 0x0C;
+                    Debug_Print("[LB] >>> PID 0x0C (RPM) request\r\n");
+                } else if (test_counter == 4) {
+                    /* PID 0x05 (Coolant) */
+                    obd_request[0] = 0x02; obd_request[1] = 0x01; obd_request[2] = 0x05;
+                    Debug_Print("[LB] >>> PID 0x05 (Coolant) request\r\n");
+                } else {
+                    /* PID 0x0D (Speed) */
+                    obd_request[0] = 0x02; obd_request[1] = 0x01; obd_request[2] = 0x0D;
+                    Debug_Print("[LB] >>> PID 0x0D (Speed) request\r\n");
+                }
+
+                /* 송신 */
+                FDCAN_TxHeaderTypeDef test_hdr = {0};
+                test_hdr.Identifier          = OBD2_REQUEST_ID;
+                test_hdr.IdType              = FDCAN_STANDARD_ID;
+                test_hdr.TxFrameType         = FDCAN_DATA_FRAME;
+                test_hdr.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+                test_hdr.BitRateSwitch       = FDCAN_BRS_OFF;
+                test_hdr.FDFormat            = FDCAN_CLASSIC_CAN;
+                test_hdr.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
+                test_hdr.MessageMarker       = 0U;
+                test_hdr.DataLength          = FDCAN_DLC_BYTES_8;
+                HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &test_hdr, obd_request);
+
+                /* RX FIFO 폴링 대기 */
+                HAL_Delay(10);
+                uint32_t rxf0s = hfdcan1.Instance->RXF0S;
+                uint32_t fill = rxf0s & 0x7F;
+
+                if (fill > 0) {
+                    FDCAN_RxHeaderTypeDef rx_hdr;
+                    uint8_t rx_data[8] = {0};
+                    HAL_FDCAN_GetRxMessage(&hfdcan1, FDCAN_RX_FIFO0, &rx_hdr, rx_data);
+                    uint8_t dlc = (uint8_t)(rx_hdr.DataLength >> 16);
+                    Debug_Print("[LB] <<< RX ID=0x%03lX DLC=%u D=%02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+                                rx_hdr.Identifier, dlc,
+                                rx_data[0], rx_data[1], rx_data[2], rx_data[3],
+                                rx_data[4], rx_data[5], rx_data[6], rx_data[7]);
+
+                    /* ISO-TP → UDS 처리 (직접 호출) */
+                    ISO_TP_ProcessFrame(rx_hdr.Identifier, rx_data, dlc);
+
+                    /* UDS 응답 확인: TX FIFO 체크 */
+                    HAL_Delay(5);
+                    uint32_t txfqs_after = hfdcan1.Instance->TXFQS;
+                    uint32_t free_after = txfqs_after & 0x7F;
+                    Debug_Print("[LB] UDS done, TX FIFO free=%lu (was 3)\r\n", free_after);
+
+                    /* UDS 응답이 TX FIFO에 있으면 읽기 */
+                    if (free_after < 3) {
+                        Debug_Print("[LB] UDS response queued in TX FIFO!\r\n");
+                    }
+                } else {
+                    Debug_Print("[LB] No RX frame!\r\n");
+                }
+            }
+
+            /* --- FDCAN 상태 모니터링 --- */
+            if (test_counter % 10 == 0) {
+                uint32_t ecr = hfdcan1.Instance->ECR;
+                uint32_t psr = hfdcan1.Instance->PSR;
+                uint32_t rxf0s = hfdcan1.Instance->RXF0S;
+                uint32_t txfqs = hfdcan1.Instance->TXFQS;
+                uint32_t cel = (ecr >> 16) & 0x3;
+                /* CEL: 0=none, 1=stuff, 2=form, 3=ACK */
+                extern uint32_t s_rx_count;
+                Debug_Print("[MON] TEC=%lu REC=%lu CEL=%lu RXF0S=0x%04lX TXFQS=0x%04lX RXcnt=%lu\r\n",
+                            (ecr >> 8) & 0xFF, ecr & 0xFF,
+                            cel,
+                            rxf0s & 0xFFFF, txfqs & 0xFFFF, g_loopback_rx_count);
+            }
+            test_counter++;
         }
 
         /* --- 10ms 대기 (다른 태스크에 CPU 양보) --- */
@@ -278,11 +428,8 @@ static void vCanRxTask(void *pvParameters)
     {
         /* Queue에서 메시지 대기 (무한 대기, CPU 양보) */
         if (xQueueReceive(xCanRxQueue, &rx_msg, portMAX_DELAY) == pdTRUE) {
-            /* ISO-TP → UDS 처리 */
-            ISO_TP_ProcessFrame(rx_msg.can_id, rx_msg.data, rx_msg.dlc);
-
-            /* CAN→RS485 포워딩 (RPi4로 전달) */
-            RS485_ForwardCANMessage(rx_msg.can_id, rx_msg.data, rx_msg.dlc);
+            /* 루프백 테스트: 수신 카운트만 증가 (출력 없음) */
+            g_loopback_rx_count++;
         }
     }
 }

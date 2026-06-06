@@ -34,7 +34,7 @@ HAL_StatusTypeDef FDCAN1_Init(FDCAN_HandleTypeDef *hfdcan)
     /* --- FDCAN 인스턴스 설정 --- */
     hfdcan->Instance                 = FDCAN1;
     hfdcan->Init.FrameFormat         = FDCAN_FRAME_CLASSIC;  /* Classic CAN */
-    hfdcan->Init.Mode                = FDCAN_MODE_NORMAL;    /* 노멀 모드 */
+    hfdcan->Init.Mode                = FDCAN_MODE_INTERNAL_LOOPBACK;  /* 내부 루프백 (테스트용) */
     hfdcan->Init.AutoRetransmission  = ENABLE;   /* 자동 재전송 활성화 */
     hfdcan->Init.TransmitPause       = DISABLE;  /* 전송 일시정지 비활성화 */
     hfdcan->Init.ProtocolException   = DISABLE;  /* 프로토콜 예외 비활성화 */
@@ -60,6 +60,10 @@ HAL_StatusTypeDef FDCAN1_Init(FDCAN_HandleTypeDef *hfdcan)
     hfdcan->Init.ExtFiltersNbr       = 0U;   /* 확장 필터 없음 */
     hfdcan->Init.TxFifoQueueMode     = FDCAN_TX_FIFO_OPERATION;  /* FIFO 모드 */
 
+    /* --- FDCAN 페리페럴 강제 리셋 (잔류 에러 카운터 초기화) --- */
+    __HAL_RCC_FDCAN_FORCE_RESET();
+    __HAL_RCC_FDCAN_RELEASE_RESET();
+
     /* --- HAL FDCAN 초기화 --- */
     status = HAL_FDCAN_Init(hfdcan);
     if (status != HAL_OK) {
@@ -67,7 +71,7 @@ HAL_StatusTypeDef FDCAN1_Init(FDCAN_HandleTypeDef *hfdcan)
         return status;
     }
 
-    Debug_Print("[FDCAN] Init OK - Classic CAN 500kbps\r\n");
+    Debug_Print("[FDCAN] Init OK - Classic CAN 500kbps (LOOPBACK)\r\n");
     return HAL_OK;
 }
 
