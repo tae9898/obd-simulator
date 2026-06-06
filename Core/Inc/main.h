@@ -145,6 +145,7 @@ extern SemaphoreHandle_t xUartMutex;
 extern FDCAN_HandleTypeDef hfdcan1;
 extern UART_HandleTypeDef  huart2;
 extern UART_HandleTypeDef  huart1;
+extern IWDG_HandleTypeDef  hiwdg;
 
 #ifdef __cplusplus
 }

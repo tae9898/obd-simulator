@@ -40,6 +40,9 @@ SemaphoreHandle_t xUartMutex = NULL;
 /* === RS485 RX Queue (ISR → Task 전달) === */
 QueueHandle_t xRS485RxQueue = NULL;
 
+/* === IWDG 핸들러 === */
+IWDG_HandleTypeDef hiwdg;
+
 /* === LED 토글 카운터 === */
 static uint32_t s_led_tick_counter = 0;
 
@@ -146,6 +149,22 @@ int main(void)
         }
     }
 
+    /* --- IWDG 초기화 (Independent Watchdog) ---
+     * LSI ~32kHz / Prescaler 32 = 1kHz (1ms/tick)
+     * Reload 2000 → 타임아웃 2초
+     * vMainTask에서 500ms마다 리프레시 (여유 1.5초)
+     * 모든 초기화 완료 후 시작 (초기화 중 타임아웃 방지)
+     */
+    hiwdg.Instance            = IWDG;
+    hiwdg.Init.Prescaler      = IWDG_PRESCALER_32;
+    hiwdg.Init.Reload         = 2000U;
+    hiwdg.Init.Window         = IWDG_WINDOW_DISABLE;
+    if (HAL_IWDG_Init(&hiwdg) != HAL_OK) {
+        Debug_Print("[ERROR] IWDG init failed\r\n");
+        while (1);
+    }
+    Debug_Print("[IWDG] Watchdog started - timeout 2000ms, refresh every 500ms\r\n");
+
     /* --- 시뮬레이션 상태 초기값 설정 --- */
     g_sim_state.engine_rpm      = RPM_IDLE;
     g_sim_state.coolant_temp    = COOLANT_TEMP_MIN;
@@ -251,6 +270,9 @@ static void vMainTask(void *pvParameters)
         if (s_led_tick_counter >= (LED_TOGGLE_PERIOD_MS / SIM_UPDATE_PERIOD_MS)) {
             s_led_tick_counter = 0;
             LED_TOGGLE();
+
+            /* IWDG 리프레시 (500ms마다, 타임아웃 2000ms 대비 여유 1.5초) */
+            HAL_IWDG_Refresh(&hiwdg);
         }
 
         /* --- 10ms 대기 (다른 태스크에 CPU 양보) --- */
