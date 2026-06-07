@@ -43,6 +43,12 @@ QueueHandle_t xRS485RxQueue = NULL;
 /* === IWDG 핸들러 === */
 IWDG_HandleTypeDef hiwdg;
 
+/* === 태스크 생존 플래그 (IWDG 감시용) === */
+volatile uint8_t g_task_alive_flags = 0U;
+
+/* === FDCAN 버스오프 이벤트 (ISR → Task) === */
+volatile uint8_t g_fdcan_busoff_detected = 0U;
+
 /* === LED 토글 카운터 === */
 static uint32_t s_led_tick_counter = 0;
 
@@ -52,6 +58,7 @@ static void MX_GPIO_Init(void);
 static void vMainTask(void *pvParameters);
 static void vCanRxTask(void *pvParameters);
 static void vRS485Task(void *pvParameters);
+static void Error_Handler_EnterSafeState(const char *msg);
 
 /**
  * @brief  메인 진입점
@@ -271,8 +278,38 @@ static void vMainTask(void *pvParameters)
             s_led_tick_counter = 0;
             LED_TOGGLE();
 
-            /* IWDG 리프레시 (500ms마다, 타임아웃 2000ms 대비 여유 1.5초) */
-            HAL_IWDG_Refresh(&hiwdg);
+            /* IWDG 리프레시: 모든 태스크 생존 확인 후에만 */
+            g_task_alive_flags |= TASK_ALIVE_MAIN;
+            if ((g_task_alive_flags & TASK_ALIVE_ALL) == TASK_ALIVE_ALL) {
+                HAL_IWDG_Refresh(&hiwdg);
+                g_task_alive_flags = 0U;
+            }
+            /* 미확인 태스크가 있으면 리프레시 안 함 → 2초 후 리셋 */
+        }
+
+        /* --- FDCAN 버스오프 복구 (ISR에서 플래그만 설정, 여기서 처리) --- */
+        if (g_fdcan_busoff_detected != 0U) {
+            g_fdcan_busoff_detected = 0U;
+            Debug_Print("[FDCAN-FATAL] Bus-off recovery (task context)...\r\n");
+
+            HAL_FDCAN_Stop(&hfdcan1);
+            __HAL_RCC_FDCAN_FORCE_RESET();
+            __HAL_RCC_FDCAN_RELEASE_RESET();
+
+            if (FDCAN1_InitFD(&hfdcan1) != HAL_OK) {
+                Error_Handler_EnterSafeState("FDCAN re-init failed");
+            }
+            if (FDCAN1_ConfigureFilters(&hfdcan1) != HAL_OK) {
+                Error_Handler_EnterSafeState("FDCAN filter re-config failed");
+            }
+            if (FDCAN1_StartNotification(&hfdcan1) != HAL_OK) {
+                Error_Handler_EnterSafeState("FDCAN notification re-activate failed");
+            }
+            if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK) {
+                Error_Handler_EnterSafeState("FDCAN restart failed");
+            }
+
+            Debug_Print("[FDCAN-FATAL] Bus-off recovery successful\r\n");
         }
 
         /* --- 10ms 대기 (다른 태스크에 CPU 양보) --- */
@@ -305,6 +342,9 @@ static void vCanRxTask(void *pvParameters)
 
             /* CAN→RS485 포워딩 (RPi4로 전달) */
             RS485_ForwardCANMessage(rx_msg.can_id, rx_msg.data, rx_msg.dlc);
+
+            /* 태스크 생존 알림 */
+            g_task_alive_flags |= TASK_ALIVE_CAN_RX;
         }
     }
 }
@@ -325,8 +365,11 @@ static void vRS485Task(void *pvParameters)
     while (1)
     {
         if (xQueueReceive(xRS485RxQueue, &rx_msg, portMAX_DELAY) == pdTRUE) {
+            /* 태스크 생존 알림 */
+            g_task_alive_flags |= TASK_ALIVE_RS485;
+
             /* 최소 프레임 길이 확인: ID(2) + DLC(1) = 3바이트 */
-            if (rx_msg.len >= 3) {
+            if (rx_msg.len >= 3U) {
                 uint32_t can_id = ((uint32_t)rx_msg.data[0] << 8) | (uint32_t)rx_msg.data[1];
                 uint8_t  dlc    = rx_msg.data[2];
 
@@ -409,47 +452,13 @@ void HAL_FDCAN_ErrorStatusCallback(FDCAN_HandleTypeDef *hfdcan,
 
 /**
  * @brief  FDCAN 버스오프 콜백
- * @note   버스오프 = TEC > 255. CAN 통신 불가 상태.
- *         복구 시도: Stop → 1초 대기 → 재초기화 → 재시작
- *         실패 시 IWDG가 시스템 리셋.
+ * @note   ISR 컨텍스트에서 호출됨 → 플래그만 설정.
+ *         실제 복구는 vMainTask에서 처리 (무거운 작업은 태스크에서).
  */
 void HAL_FDCAN_ErrorCallback(FDCAN_HandleTypeDef *hfdcan)
 {
-    uint32_t ecr = hfdcan->Instance->ECR;
-    uint32_t psr = hfdcan->Instance->PSR;
-
-    Debug_Print("[FDCAN-FATAL] Bus-Off! ECR=0x%08lX PSR=0x%08lX\r\n", ecr, psr);
-    Debug_Print("[FDCAN-FATAL] Attempting recovery...\r\n");
-
-    /* 1. CAN 정지 */
-    (void)HAL_FDCAN_Stop(hfdcan);
-
-    /* 2. 페리페럴 리셋 (잔류 에러 카운터 초기화) */
-    __HAL_RCC_FDCAN_FORCE_RESET();
-    __HAL_RCC_FDCAN_RELEASE_RESET();
-
-    /* 3. 재초기화 */
-    if (FDCAN1_InitFD(hfdcan) != HAL_OK) {
-        Error_Handler_EnterSafeState("FDCAN re-init failed after bus-off");
-        return;
-    }
-
-    if (FDCAN1_ConfigureFilters(hfdcan) != HAL_OK) {
-        Error_Handler_EnterSafeState("FDCAN filter re-config failed after bus-off");
-        return;
-    }
-
-    if (FDCAN1_StartNotification(hfdcan) != HAL_OK) {
-        Error_Handler_EnterSafeState("FDCAN notification re-activate failed after bus-off");
-        return;
-    }
-
-    if (HAL_FDCAN_Start(hfdcan) != HAL_OK) {
-        Error_Handler_EnterSafeState("FDCAN restart failed after bus-off");
-        return;
-    }
-
-    Debug_Print("[FDCAN-FATAL] Bus-off recovery successful\r\n");
+    (void)hfdcan;
+    g_fdcan_busoff_detected = 1U;
 }
 
 /**

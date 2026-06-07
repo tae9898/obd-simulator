@@ -147,6 +147,16 @@ extern UART_HandleTypeDef  huart2;
 extern UART_HandleTypeDef  huart1;
 extern IWDG_HandleTypeDef  hiwdg;
 
+/* === 태스크 생존 플래그 (IWDG 감시용) === */
+extern volatile uint8_t g_task_alive_flags;
+#define TASK_ALIVE_MAIN   (1U << 0U)
+#define TASK_ALIVE_CAN_RX (1U << 1U)
+#define TASK_ALIVE_RS485  (1U << 2U)
+#define TASK_ALIVE_ALL    (TASK_ALIVE_MAIN | TASK_ALIVE_CAN_RX | TASK_ALIVE_RS485)
+
+/* === FDCAN 버스오프 이벤트 (ISR → Task) === */
+extern volatile uint8_t g_fdcan_busoff_detected;
+
 #ifdef __cplusplus
 }
 #endif
