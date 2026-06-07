@@ -60,7 +60,7 @@ HAL_StatusTypeDef UART_DebugInit(UART_HandleTypeDef *huart)
 int __io_putchar(int ch)
 {
     /* 개행 문자 -> CR+LF 변환 */
-    if (ch == '\n') {
+    if (ch == (int)'\n') {
         HAL_UART_Transmit(&huart2, (uint8_t *)"\r", 1U, HAL_MAX_DELAY);
     }
 
@@ -112,12 +112,12 @@ void Debug_LogCAN_Rx(uint32_t id, const uint8_t *data, uint32_t len)
     char buf[256];
     int pos = 0;
 
-    pos += snprintf(buf + pos, sizeof(buf) - pos,
+    pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
                     "[CAN] RX ID:0x%03lX DLC:%lu Data:", id, len);
-    for (uint32_t i = 0U; i < len && pos < (int)(sizeof(buf) - 4); i++) {
-        pos += snprintf(buf + pos, sizeof(buf) - pos, " %02X", data[i]);
+    for (uint32_t i = 0U; i < len && pos < (int)(sizeof(buf) - 4U); i++) {
+        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, " %02X", data[i]);
     }
-    snprintf(buf + pos, sizeof(buf) - pos, "\r\n");
+    snprintf(buf + pos, sizeof(buf) - (size_t)pos, "\r\n");
 
     Debug_Print("%s", buf);
 }
@@ -133,12 +133,12 @@ void Debug_LogCAN_Tx(uint32_t id, const uint8_t *data, uint32_t len)
     char buf[256];
     int pos = 0;
 
-    pos += snprintf(buf + pos, sizeof(buf) - pos,
+    pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
                     "[CAN] TX ID:0x%03lX DLC:%lu Data:", id, len);
-    for (uint32_t i = 0U; i < len && pos < (int)(sizeof(buf) - 4); i++) {
-        pos += snprintf(buf + pos, sizeof(buf) - pos, " %02X", data[i]);
+    for (uint32_t i = 0U; i < len && pos < (int)(sizeof(buf) - 4U); i++) {
+        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, " %02X", data[i]);
     }
-    snprintf(buf + pos, sizeof(buf) - pos, "\r\n");
+    snprintf(buf + pos, sizeof(buf) - (size_t)pos, "\r\n");
 
     Debug_Print("%s", buf);
 }

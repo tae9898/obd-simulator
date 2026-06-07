@@ -327,10 +327,10 @@ static void vRS485Task(void *pvParameters)
         if (xQueueReceive(xRS485RxQueue, &rx_msg, portMAX_DELAY) == pdTRUE) {
             /* 최소 프레임 길이 확인: ID(2) + DLC(1) = 3바이트 */
             if (rx_msg.len >= 3) {
-                uint32_t can_id = ((uint32_t)rx_msg.data[0] << 8) | rx_msg.data[1];
+                uint32_t can_id = ((uint32_t)rx_msg.data[0] << 8) | (uint32_t)rx_msg.data[1];
                 uint8_t  dlc    = rx_msg.data[2];
 
-                if (dlc <= 8 && (3 + dlc) <= rx_msg.len) {
+                if (dlc <= 8U && (3U + dlc) <= rx_msg.len) {
                     /* RS485→CAN 포워딩 */
                     FDCAN_TxHeaderTypeDef tx_header = {0};
                     tx_header.Identifier          = can_id;
@@ -395,8 +395,8 @@ void HAL_FDCAN_ErrorStatusCallback(FDCAN_HandleTypeDef *hfdcan,
                                     uint32_t ErrorStatusITs)
 {
     uint32_t ecr = hfdcan->Instance->ECR;
-    uint32_t tec = (ecr >> 16) & 0xFF;
-    uint32_t rec = (ecr >> 8) & 0xFF;
+    uint32_t tec = (ecr >> 16) & 0xFFU;
+    uint32_t rec = (ecr >> 8) & 0xFFU;
 
     if ((ErrorStatusITs & FDCAN_IT_ERROR_WARNING) != 0U) {
         Debug_Print("[FDCAN-WARN] Error Warning: TEC=%lu REC=%lu\r\n", tec, rec);

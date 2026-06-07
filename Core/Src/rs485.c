@@ -109,11 +109,11 @@ HAL_StatusTypeDef RS485_ForwardCANMessage(uint32_t can_id, const uint8_t *data, 
     uint8_t frame[11];  /* 최대: 2(ID) + 1(DLC) + 8(DATA) = 11바이트 */
     uint8_t pos = 0;
 
-    frame[pos++] = (uint8_t)((can_id >> 8) & 0xFF);  /* ID 상위 */
-    frame[pos++] = (uint8_t)(can_id & 0xFF);           /* ID 하위 */
+    frame[pos++] = (uint8_t)((can_id >> 8) & 0xFFU);  /* ID 상위 */
+    frame[pos++] = (uint8_t)(can_id & 0xFFU);           /* ID 하위 */
     frame[pos++] = dlc;
 
-    for (uint8_t i = 0; i < dlc && i < 8; i++) {
+    for (uint8_t i = 0U; i < dlc && i < 8U; i++) {
         frame[pos++] = data[i];
     }
 
