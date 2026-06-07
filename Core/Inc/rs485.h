@@ -71,6 +71,12 @@ HAL_StatusTypeDef RS485_SendData(const uint8_t *data, uint16_t len);
  */
 HAL_StatusTypeDef RS485_ForwardCANMessage(uint32_t can_id, const uint8_t *data, uint8_t dlc);
 
+/**
+ * @brief  UART 에러 후 수신 재시작
+ * @note   HAL_UART_ErrorCallback에서 s_rx_byte static 접근용
+ */
+void RS485_RestartReceive(void);
+
 #ifdef __cplusplus
 }
 #endif

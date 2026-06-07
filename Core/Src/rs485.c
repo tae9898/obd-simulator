@@ -122,6 +122,16 @@ HAL_StatusTypeDef RS485_ForwardCANMessage(uint32_t can_id, const uint8_t *data, 
 }
 
 /**
+ * @brief  UART 에러 후 수신 재시작
+ * @note   HAL_UART_ErrorCallback에서 호출.
+ *         s_rx_byte가 static이므로 이 모듈 내부에서 처리해야 함.
+ */
+void RS485_RestartReceive(void)
+{
+    HAL_UART_Receive_IT(&huart1, (uint8_t *)&s_rx_byte, 1);
+}
+
+/**
  * @brief  UART 수신 완료 콜백 (HAL 공유)
  *
  * @note   USART1 인터럽트 기반 수신:

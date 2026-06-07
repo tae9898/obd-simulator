@@ -58,3 +58,14 @@ void USART1_IRQHandler(void)
 {
     HAL_UART_IRQHandler(&huart1);
 }
+
+/**
+ * @brief  FDCAN1 IT1 인터럽트 핸들러 (에러 전용)
+ * @note   IT0 = RX 메시지, IT1 = 에러 이벤트 (Warning/Passive/BusOff)
+ *         HAL_FDCAN_IRQHandler가 에러 플래그를 확인하고
+ *         HAL_FDCAN_ErrorStatusCallback / HAL_FDCAN_ErrorCallback 호출
+ */
+void FDCAN1_IT1_IRQHandler(void)
+{
+    HAL_FDCAN_IRQHandler(&hfdcan1);
+}

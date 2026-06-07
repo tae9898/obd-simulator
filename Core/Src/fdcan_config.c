@@ -182,10 +182,17 @@ HAL_StatusTypeDef FDCAN1_StartNotification(FDCAN_HandleTypeDef *hfdcan)
     HAL_NVIC_SetPriority(FDCAN1_IT0_IRQn, 6, 0);
     HAL_NVIC_EnableIRQ(FDCAN1_IT0_IRQn);
 
-    /* RX FIFO0 새 메시지 인터럽트 활성화 */
+    /* --- 에러 인터럽트 라인 (IT1) 설정 --- */
+    HAL_NVIC_SetPriority(FDCAN1_IT1_IRQn, 6, 0);
+    HAL_NVIC_EnableIRQ(FDCAN1_IT1_IRQn);
+
+    /* RX FIFO0 새 메시지 + 에러 인터럽트 활성화 */
     status = HAL_FDCAN_ActivateNotification(
         hfdcan,
-        FDCAN_IT_RX_FIFO0_NEW_MESSAGE,
+        FDCAN_IT_RX_FIFO0_NEW_MESSAGE
+      | FDCAN_IT_ERROR_WARNING      /* TEC/REC > 96 */
+      | FDCAN_IT_ERROR_PASSIVE      /* TEC/REC > 127 */
+      | FDCAN_IT_BUS_OFF,           /* TEC > 255 (치명적) */
         0U  /* FIFO0 워터마크: 0 = 모든 메시지에 대해 인터럽트 */
     );
 
@@ -194,7 +201,7 @@ HAL_StatusTypeDef FDCAN1_StartNotification(FDCAN_HandleTypeDef *hfdcan)
         return status;
     }
 
-    Debug_Print("[FDCAN] RX interrupt enabled\r\n");
+    Debug_Print("[FDCAN] RX + Error interrupts enabled\r\n");
     return HAL_OK;
 }
 

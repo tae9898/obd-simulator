@@ -352,6 +352,141 @@ static void vRS485Task(void *pvParameters)
 }
 
 /* ====================================================
+ * 에러 핸들러 + HAL 콜백
+ * ==================================================== */
+
+/**
+ * @brief  Safe State 진입 (치명적 에러 시)
+ * @param  msg: 에러 메시지
+ *
+ * @note   안전 상태:
+ *         1. FDCAN 정지 (CAN 버스에 잘못된 데이터 송신 방지)
+ *         2. RS485 DE/RE LOW (수신 모드로 전환, 버스 충돌 방지)
+ *         3. 에러 메시지 출력
+ *         4. LED 빠른 깜빡임
+ *         5. IWDG 리프레시 안 함 → 2초 후 시스템 리셋
+ */
+static void Error_Handler_EnterSafeState(const char *msg)
+{
+    /* CAN 컨트롤러 정지 */
+    (void)HAL_FDCAN_Stop(&hfdcan1);
+
+    /* RS485 수신 모드 전환 */
+    RS485_DE_LOW();
+
+    /* 에러 로깅 */
+    Debug_Print("[SAFE-STATE] %s\r\n", msg);
+    Debug_Print("[SAFE-STATE] Waiting for IWDG reset...\r\n");
+
+    /* LED 빠른 깜빡임 + IWDG 리프레시 안 함 → 2초 후 리셋 */
+    while (1) {
+        LED_ON();
+        HAL_Delay(50);
+        LED_OFF();
+        HAL_Delay(50);
+    }
+}
+
+/**
+ * @brief  FDCAN 에러 상태 콜백 (Warning / Passive)
+ * @note   에러 카운터 변화 시 호출. 버스오프는 ErrorCallback에서 처리.
+ */
+void HAL_FDCAN_ErrorStatusCallback(FDCAN_HandleTypeDef *hfdcan,
+                                    uint32_t ErrorStatusITs)
+{
+    uint32_t ecr = hfdcan->Instance->ECR;
+    uint32_t tec = (ecr >> 16) & 0xFF;
+    uint32_t rec = (ecr >> 8) & 0xFF;
+
+    if ((ErrorStatusITs & FDCAN_IT_ERROR_WARNING) != 0U) {
+        Debug_Print("[FDCAN-WARN] Error Warning: TEC=%lu REC=%lu\r\n", tec, rec);
+    }
+
+    if ((ErrorStatusITs & FDCAN_IT_ERROR_PASSIVE) != 0U) {
+        Debug_Print("[FDCAN-ERR] Error Passive: TEC=%lu REC=%lu\r\n", tec, rec);
+    }
+}
+
+/**
+ * @brief  FDCAN 버스오프 콜백
+ * @note   버스오프 = TEC > 255. CAN 통신 불가 상태.
+ *         복구 시도: Stop → 1초 대기 → 재초기화 → 재시작
+ *         실패 시 IWDG가 시스템 리셋.
+ */
+void HAL_FDCAN_ErrorCallback(FDCAN_HandleTypeDef *hfdcan)
+{
+    uint32_t ecr = hfdcan->Instance->ECR;
+    uint32_t psr = hfdcan->Instance->PSR;
+
+    Debug_Print("[FDCAN-FATAL] Bus-Off! ECR=0x%08lX PSR=0x%08lX\r\n", ecr, psr);
+    Debug_Print("[FDCAN-FATAL] Attempting recovery...\r\n");
+
+    /* 1. CAN 정지 */
+    (void)HAL_FDCAN_Stop(hfdcan);
+
+    /* 2. 페리페럴 리셋 (잔류 에러 카운터 초기화) */
+    __HAL_RCC_FDCAN_FORCE_RESET();
+    __HAL_RCC_FDCAN_RELEASE_RESET();
+
+    /* 3. 재초기화 */
+    if (FDCAN1_InitFD(hfdcan) != HAL_OK) {
+        Error_Handler_EnterSafeState("FDCAN re-init failed after bus-off");
+        return;
+    }
+
+    if (FDCAN1_ConfigureFilters(hfdcan) != HAL_OK) {
+        Error_Handler_EnterSafeState("FDCAN filter re-config failed after bus-off");
+        return;
+    }
+
+    if (FDCAN1_StartNotification(hfdcan) != HAL_OK) {
+        Error_Handler_EnterSafeState("FDCAN notification re-activate failed after bus-off");
+        return;
+    }
+
+    if (HAL_FDCAN_Start(hfdcan) != HAL_OK) {
+        Error_Handler_EnterSafeState("FDCAN restart failed after bus-off");
+        return;
+    }
+
+    Debug_Print("[FDCAN-FATAL] Bus-off recovery successful\r\n");
+}
+
+/**
+ * @brief  UART 에러 콜백 (프레이밍/오버런/노이즈)
+ * @note   USART1 (RS485): 에러 플래그 클리어 + RX 재시작
+ *         USART2 (Debug): 에러 로깅만 (ST-LINK는 안정적)
+ */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    uint32_t error = huart->ErrorCode;
+
+    if (huart->Instance == USART1) {
+        /* RS485 UART 에러 */
+        if ((error & HAL_UART_ERROR_FE) != 0U) {
+            Debug_Print("[RS485-ERR] Framing error (check baudrate/wiring)\r\n");
+        }
+        if ((error & HAL_UART_ERROR_ORE) != 0U) {
+            Debug_Print("[RS485-ERR] Overrun error (CPU too slow?)\r\n");
+        }
+        if ((error & HAL_UART_ERROR_NE) != 0U) {
+            Debug_Print("[RS485-ERR] Noise error\r\n");
+        }
+
+        /* 오버런 플래그 클리어 (필수, 안 하면 RX 멈춤) */
+        __HAL_UART_CLEAR_OREFLAG(huart);
+
+        /* 1바이트 수신 재시작 */
+        RS485_RestartReceive();
+    }
+    else if (huart->Instance == USART2) {
+        /* Debug UART: 로깅만 */
+        Debug_Print("[UART2-ERR] Error code: 0x%08lX\r\n", error);
+        __HAL_UART_CLEAR_OREFLAG(huart);
+    }
+}
+
+/* ====================================================
  * FreeRTOS 훅 함수 (FreeRTOSConfig.h에서 활성화)
  * ==================================================== */
 
