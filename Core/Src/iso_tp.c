@@ -27,6 +27,7 @@
 
 /* === 정적 컨텍스트 === */
 static ISO_TP_Context_t s_ctx;
+static ISO_TP_StreamSink_t s_stream_sink = NULL;  /**< OTA 스트림 싱크 (NULL=비활성) */
 
 /* === 내부 함수 프로토타입 === */
 static void process_single_frame(uint32_t can_id, const uint8_t *data, uint8_t dlc);
@@ -34,7 +35,7 @@ static void process_first_frame(uint32_t can_id, const uint8_t *data, uint8_t dl
 static void process_consecutive_frame(const uint8_t *data, uint8_t dlc);
 static void process_flow_control(const uint8_t *data, uint8_t dlc);
 static void send_single_frame(uint32_t can_id, const uint8_t *data, uint16_t len);
-static void send_first_frame(uint32_t can_id, const uint8_t *data, uint16_t total_len);
+static void send_first_frame(uint32_t can_id, const uint8_t *data, uint32_t total_len);
 static void send_consecutive_frames(void);
 static void send_flow_control(uint32_t can_id, uint8_t fs, uint8_t bs, uint8_t stmin);
 static void dispatch_completed_message(void);
@@ -51,6 +52,11 @@ void ISO_TP_Init(void)
     (void)memset(&s_ctx, 0, sizeof(s_ctx));
     s_ctx.state = ISO_TP_IDLE;
     Debug_Print("[ISO-TP] Init OK\r\n");
+}
+
+void ISO_TP_RegisterStreamSink(ISO_TP_StreamSink_t sink)
+{
+    s_stream_sink = sink;
 }
 
 void ISO_TP_ProcessFrame(uint32_t can_id, const uint8_t *data, uint8_t dlc)
@@ -87,17 +93,25 @@ void ISO_TP_SendResponse(uint32_t can_id, const uint8_t *data, uint16_t len)
         return;
     }
 
+    /* tx_buffer 풀-버퍼 상한 초과 방지.
+     * > MAX 송신은 TX 스트리밍 소스(미구현)가 필요하다. */
+    if (len > ISO_TP_MAX_MESSAGE_SIZE) {
+        Debug_Print("[ISO-TP] TX too large (%u > %u), rejected\r\n",
+                    (unsigned)len, (unsigned)ISO_TP_MAX_MESSAGE_SIZE);
+        return;
+    }
+
     if (len <= ISO_TP_SF_MAX_PAYLOAD) {
         send_single_frame(can_id, data, len);
     } else {
         /* 멀티프레임 송신: FF 보내고 FC 대기 */
         (void)memcpy(s_ctx.tx_buffer, data, len);
-        s_ctx.tx_total_size = len;
+        s_ctx.tx_total_size = (uint32_t)len;
         s_ctx.tx_sent = 0U;
         s_ctx.tx_seq = 1U;
         s_ctx.tx_can_id = can_id;
         s_ctx.state = ISO_TP_TX_WAIT_FC;
-        send_first_frame(can_id, data, len);
+        send_first_frame(can_id, data, (uint32_t)len);
     }
 }
 
@@ -111,6 +125,10 @@ void ISO_TP_Tick(uint32_t now_ms)
     if (s_ctx.state == ISO_TP_WAIT_CF) {
         if ((now_ms - s_ctx.last_activity_tick) >= ISO_TP_RX_TIMEOUT_MS) {
             Debug_Print("[ISO-TP] RX timeout\r\n");
+            if ((s_ctx.stream_mode != 0U) && (s_stream_sink != NULL)) {
+                s_stream_sink(ISO_TP_STREAM_ERROR, NULL, 0U, s_ctx.rx_total_size);
+            }
+            s_ctx.stream_mode = 0U;
             s_ctx.state = ISO_TP_IDLE;
         }
     }
@@ -170,30 +188,85 @@ static void process_single_frame(uint32_t can_id, const uint8_t *data, uint8_t d
  */
 static void process_first_frame(uint32_t can_id, const uint8_t *data, uint8_t dlc)
 {
-    uint16_t total_size = (uint16_t)((data[0] & 0x0FU) << 8U) | (uint16_t)data[1];
+    /* 길이 디코딩: classic(12-bit) 또는 escape(32-bit).
+     * escape 감지: data[0]=0x10 & data[1]=0x00. 정상 FF에선 길이 0(무효)이라
+     * 이 값을 escape 마커로 재사용 (ISO 15765-2:2016). */
+    uint32_t total_size;
+    uint8_t  payload_off;
+    uint16_t len12 = (uint16_t)(((uint16_t)(data[0] & 0x0FU) << 8U) | (uint16_t)data[1]);
 
+    if (len12 != 0U) {
+        /* classic FF (≤4095) */
+        total_size  = (uint32_t)len12;
+        payload_off = 2U;
+    } else {
+        /* escape FF (>4095): bytes[2..5] = 32-bit 길이 (big-endian) */
+        if (dlc < 6U) {
+            Debug_Print("[ISO-TP] escape FF too short (dlc=%u)\r\n", dlc);
+            s_ctx.state = ISO_TP_IDLE;
+            return;
+        }
+        total_size = (((uint32_t)data[2]) << 24U)
+                   | (((uint32_t)data[3]) << 16U)
+                   | (((uint32_t)data[4]) << 8U)
+                   | ((uint32_t)data[5]);
+        payload_off = 6U;
+    }
+
+    /* FF 데이터 청크 (PCI + 길이 필드 이후) */
+    uint8_t ff_payload = 0U;
+    if (dlc > payload_off) {
+        ff_payload = (uint8_t)(dlc - payload_off);
+    }
+    if ((uint32_t)ff_payload > (ISO_TP_FRAME_SIZE - payload_off)) {
+        ff_payload = (uint8_t)(ISO_TP_FRAME_SIZE - payload_off);
+    }
+    if ((uint32_t)ff_payload > total_size) {
+        ff_payload = (uint8_t)total_size;
+    }
+
+    /* 버퍼 한계 초과 → 스트림 싱크로 처리 (싱크 미등록 시 거부) */
     if (total_size > ISO_TP_MAX_MESSAGE_SIZE) {
-        Debug_Print("[ISO-TP] FF too large: %u\r\n", total_size);
-        send_flow_control(can_id, ISO_TP_FC_OVERFLOW, 0U, 0U);
-        s_ctx.state = ISO_TP_IDLE;
+        if (s_stream_sink == NULL) {
+            Debug_Print("[ISO-TP] FF too large: %lu, no sink -> OVERFLOW\r\n",
+                        (unsigned long)total_size);
+            send_flow_control(can_id, ISO_TP_FC_OVERFLOW, 0U, 0U);
+            s_ctx.state = ISO_TP_IDLE;
+            return;
+        }
+        /* 스트림 모드 진입: rx_buffer 미사용, CF 청크를 싱크로 직접 전달 */
+        s_ctx.rx_total_size     = total_size;
+        s_ctx.rx_received       = 0U;
+        s_ctx.rx_expected_seq   = 1U;
+        s_ctx.rx_can_id         = can_id;
+        s_ctx.stream_mode       = 1U;
+        s_ctx.last_activity_tick = HAL_GetTick();
+        s_ctx.state = ISO_TP_WAIT_CF;
+
+        s_stream_sink(ISO_TP_STREAM_BEGIN, NULL, 0U, total_size);
+        if (ff_payload > 0U) {
+            s_stream_sink(ISO_TP_STREAM_DATA, &data[payload_off],
+                          (uint32_t)ff_payload, total_size);
+            s_ctx.rx_received = (uint32_t)ff_payload;
+        }
+        Debug_Print("[ISO-TP] FF(stream) total=%lu, got=%lu\r\n",
+                    (unsigned long)total_size, (unsigned long)s_ctx.rx_received);
+        send_flow_control(can_id, ISO_TP_FC_CONTINUE, ISO_TP_FC_BLOCK_SIZE, ISO_TP_FC_STMIN);
         return;
     }
 
-    /* FF 페이로드: byte2부터 (CAN-FD 최대 62바이트 = 64 - 2바이트 PCI) */
-    uint8_t ff_payload = (uint8_t)(dlc - 2U);
-    if (ff_payload > (ISO_TP_FRAME_SIZE - 2U)) {
-        ff_payload = (uint8_t)(ISO_TP_FRAME_SIZE - 2U);   /* 62 */
-    }
-
-    (void)memcpy(s_ctx.rx_buffer, &data[2], ff_payload);
-    s_ctx.rx_total_size = total_size;
-    s_ctx.rx_received = ff_payload;
-    s_ctx.rx_expected_seq = 1U;
-    s_ctx.rx_can_id = can_id;
+    /* 버퍼 경로 (≤4095): rx_buffer에 통째로 조립 */
+    (void)memcpy(s_ctx.rx_buffer, &data[payload_off], ff_payload);
+    s_ctx.rx_total_size     = total_size;
+    s_ctx.rx_received       = (uint32_t)ff_payload;
+    s_ctx.rx_expected_seq   = 1U;
+    s_ctx.rx_can_id         = can_id;
+    s_ctx.stream_mode       = 0U;
     s_ctx.last_activity_tick = HAL_GetTick();
     s_ctx.state = ISO_TP_WAIT_CF;
 
-    Debug_Print("[ISO-TP] FF total=%u, got=%u\r\n", total_size, s_ctx.rx_received);
+    Debug_Print("[ISO-TP] FF total=%lu, got=%lu\r\n",
+                (unsigned long)total_size, (unsigned long)s_ctx.rx_received);
 
     /* "계속 보내라" FC 응답 */
     send_flow_control(can_id, ISO_TP_FC_CONTINUE, ISO_TP_FC_BLOCK_SIZE, ISO_TP_FC_STMIN);
@@ -215,28 +288,50 @@ static void process_consecutive_frame(const uint8_t *data, uint8_t dlc)
     if (seq != s_ctx.rx_expected_seq) {
         Debug_Print("[ISO-TP] CF seq mismatch: got=%u exp=%u\r\n",
                      seq, s_ctx.rx_expected_seq);
+        if ((s_ctx.stream_mode != 0U) && (s_stream_sink != NULL)) {
+            s_stream_sink(ISO_TP_STREAM_ERROR, NULL, 0U, s_ctx.rx_total_size);
+        }
+        s_ctx.stream_mode = 0U;
         s_ctx.state = ISO_TP_IDLE;
         return;
     }
 
-    uint16_t remaining = s_ctx.rx_total_size - s_ctx.rx_received;
+    uint32_t remaining = s_ctx.rx_total_size - s_ctx.rx_received;
     uint8_t cf_payload = (uint8_t)(dlc - 1U);
-    if ((uint16_t)cf_payload > remaining) {
+    if ((uint32_t)cf_payload > remaining) {
         cf_payload = (uint8_t)remaining;
     }
 
-    (void)memcpy(&s_ctx.rx_buffer[s_ctx.rx_received], &data[1], cf_payload);
-    s_ctx.rx_received += cf_payload;
-    s_ctx.rx_expected_seq = (s_ctx.rx_expected_seq + 1U) & 0x0FU;
+    if (s_ctx.stream_mode != 0U) {
+        /* 스트림 경로: 싱크로 청크 전달 (rx_buffer 미사용) */
+        if (s_stream_sink != NULL) {
+            s_stream_sink(ISO_TP_STREAM_DATA, &data[1],
+                          (uint32_t)cf_payload, s_ctx.rx_total_size);
+        }
+    } else {
+        (void)memcpy(&s_ctx.rx_buffer[s_ctx.rx_received], &data[1], cf_payload);
+    }
+
+    s_ctx.rx_received += (uint32_t)cf_payload;
+    s_ctx.rx_expected_seq = (uint8_t)((s_ctx.rx_expected_seq + 1U) & 0x0FU);
     s_ctx.last_activity_tick = HAL_GetTick();
 
-    Debug_Print("[ISO-TP] CF seq=%u progress=%u/%u\r\n",
-                seq, s_ctx.rx_received, s_ctx.rx_total_size);
+    Debug_Print("[ISO-TP] CF seq=%u progress=%lu/%lu\r\n",
+                seq, (unsigned long)s_ctx.rx_received, (unsigned long)s_ctx.rx_total_size);
 
     if (s_ctx.rx_received >= s_ctx.rx_total_size) {
-        s_ctx.state = ISO_TP_COMPLETE;
-        Debug_Print("[ISO-TP] Multi-frame complete\r\n");
-        dispatch_completed_message();
+        if (s_ctx.stream_mode != 0U) {
+            if (s_stream_sink != NULL) {
+                s_stream_sink(ISO_TP_STREAM_END, NULL, 0U, s_ctx.rx_total_size);
+            }
+            s_ctx.stream_mode = 0U;
+            s_ctx.state = ISO_TP_IDLE;
+            Debug_Print("[ISO-TP] Stream complete\r\n");
+        } else {
+            s_ctx.state = ISO_TP_COMPLETE;
+            Debug_Print("[ISO-TP] Multi-frame complete\r\n");
+            dispatch_completed_message();
+        }
     }
 }
 
@@ -304,19 +399,36 @@ static void send_single_frame(uint32_t can_id, const uint8_t *data, uint16_t len
     }
 }
 
-static void send_first_frame(uint32_t can_id, const uint8_t *data, uint16_t total_len)
+static void send_first_frame(uint32_t can_id, const uint8_t *data, uint32_t total_len)
 {
     uint8_t frame[ISO_TP_FRAME_SIZE];
+    uint8_t payload_off;
 
-    frame[0] = (uint8_t)(ISO_TP_PCI_FIRST_FRAME | ((total_len >> 8U) & 0x0FU));
-    frame[1] = (uint8_t)(total_len & 0xFFU);
+    (void)memset(frame, 0xCCU, sizeof(frame));
 
-    /* FF 페이로드: 최대 62바이트 (64 - 2바이트 PCI) */
-    uint16_t ff_payload = total_len;
-    if (ff_payload > (ISO_TP_FRAME_SIZE - 2U)) {
-        ff_payload = (uint16_t)(ISO_TP_FRAME_SIZE - 2U);   /* 62 */
+    if (total_len <= ISO_TP_FF_ESCAPE_THRESHOLD) {
+        /* classic FF: 12-bit 길이 (byte0 하위 니블 + byte1) */
+        frame[0] = (uint8_t)(ISO_TP_PCI_FIRST_FRAME
+                             | (uint8_t)((total_len >> 8U) & 0x0FU));
+        frame[1] = (uint8_t)(total_len & 0xFFU);
+        payload_off = 2U;
+    } else {
+        /* escape FF (>4095): 0x10 0x00 + 32-bit 길이 (big-endian, CAN-FD 전용) */
+        frame[0] = ISO_TP_PCI_FIRST_FRAME;              /* 0x10 */
+        frame[1] = 0x00U;                                /* escape 마커 */
+        frame[2] = (uint8_t)((total_len >> 24U) & 0xFFU);
+        frame[3] = (uint8_t)((total_len >> 16U) & 0xFFU);
+        frame[4] = (uint8_t)((total_len >> 8U) & 0xFFU);
+        frame[5] = (uint8_t)(total_len & 0xFFU);
+        payload_off = 6U;
     }
-    (void)memcpy(&frame[2], data, ff_payload);
+
+    /* FF 페이로드: 프레임에서 (PCI + 길이) 이후, 전체 길이 이하 */
+    uint32_t ff_payload = total_len;
+    if (ff_payload > ((uint32_t)ISO_TP_FRAME_SIZE - (uint32_t)payload_off)) {
+        ff_payload = (uint32_t)ISO_TP_FRAME_SIZE - (uint32_t)payload_off;
+    }
+    (void)memcpy(&frame[payload_off], data, ff_payload);
     s_ctx.tx_sent = ff_payload;
 
     FDCAN_TxHeaderTypeDef tx_header;
@@ -335,7 +447,7 @@ static void send_first_frame(uint32_t can_id, const uint8_t *data, uint16_t tota
         s_ctx.state = ISO_TP_IDLE;
     } else {
         s_ctx.last_activity_tick = HAL_GetTick();
-        Debug_Print("[ISO-TP] FF TX total=%u\r\n", total_len);
+        Debug_Print("[ISO-TP] FF TX total=%lu\r\n", (unsigned long)total_len);
     }
 }
 
@@ -347,9 +459,9 @@ static void send_consecutive_frames(void)
 
         frame[0] = (uint8_t)(ISO_TP_PCI_CONSECUTIVE | (s_ctx.tx_seq & 0x0FU));
 
-        uint16_t remaining = s_ctx.tx_total_size - s_ctx.tx_sent;
+        uint32_t remaining = s_ctx.tx_total_size - s_ctx.tx_sent;
         uint8_t cf_payload = ISO_TP_CF_PAYLOAD_SIZE;   /* 63 */
-        if ((uint16_t)cf_payload > remaining) {
+        if ((uint32_t)cf_payload > remaining) {
             cf_payload = (uint8_t)remaining;
         }
 
@@ -372,7 +484,7 @@ static void send_consecutive_frames(void)
             return;
         }
 
-        s_ctx.tx_sent += cf_payload;
+        s_ctx.tx_sent += (uint32_t)cf_payload;
         s_ctx.tx_seq = (s_ctx.tx_seq + 1U) & 0x0FU;
     }
 

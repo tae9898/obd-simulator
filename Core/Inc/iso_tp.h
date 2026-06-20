@@ -22,8 +22,16 @@ extern "C" {
 #include "main.h"
 
 /* === ISO-TP 상수 === */
-/** 최대 메시지 크기 (CAN-FD 64바이트 프레임 기준) */
-#define ISO_TP_MAX_MESSAGE_SIZE    64U
+/**
+ * 최대 메시지 크기 (버퍼 풀-조립 상한).
+ * - total ≤ 이 값: rx_buffer/tx_buffer 에 통째로 조립 (일반 UDS 멀티프레임)
+ * - total > 이 값: 스트림 싱크로 CF 청크를 직접 전달 (OTA 대용량, 풀-버퍼링 아님)
+ * 4095 = classic FF(12-bit) 한계. 초과분은 escape FF(32-bit)로 처리.
+ */
+#define ISO_TP_MAX_MESSAGE_SIZE    4095U
+
+/** classic FF 12-bit 길이 한계. 이 값 초과 시 escape FF 사용 (ISO 15765-2:2016) */
+#define ISO_TP_FF_ESCAPE_THRESHOLD 4095U
 
 /** CAN-FD 프레임 최대 페이로드 */
 #define ISO_TP_FRAME_SIZE          64U
@@ -73,22 +81,41 @@ typedef struct {
     ISO_TP_State_t state;                  /**< 현재 상태 */
 
     /* 수신 관련 */
-    uint8_t  rx_buffer[ISO_TP_MAX_MESSAGE_SIZE]; /**< 수신 조립 버퍼 */
-    uint16_t rx_total_size;                 /**< 총 수신 메시지 크기 */
-    uint16_t rx_received;                   /**< 지금까지 수신한 바이트 수 */
+    uint8_t  rx_buffer[ISO_TP_MAX_MESSAGE_SIZE]; /**< 수신 조립 버퍼 (버퍼 경로용) */
+    uint32_t rx_total_size;                 /**< 총 수신 메시지 크기 (escape FF: 32-bit) */
+    uint32_t rx_received;                   /**< 지금까지 수신한 바이트 수 */
     uint8_t  rx_expected_seq;               /**< 다음에 올 CF 시퀀스 번호 */
     uint32_t rx_can_id;                     /**< 수신 CAN ID */
+    uint8_t  stream_mode;                   /**< 1=스트림 경로(>MAX, 싱크로 전달), 0=버퍼 경로 */
 
     /* 송신 관련 */
     uint8_t  tx_buffer[ISO_TP_MAX_MESSAGE_SIZE]; /**< 송신 분할 버퍼 */
-    uint16_t tx_total_size;                 /**< 총 송신 메시지 크기 */
-    uint16_t tx_sent;                       /**< 지금까지 송신한 바이트 수 */
+    uint32_t tx_total_size;                 /**< 총 송신 메시지 크기 */
+    uint32_t tx_sent;                       /**< 지금까지 송신한 바이트 수 */
     uint8_t  tx_seq;                        /**< 다음 CF 시퀀스 번호 */
     uint32_t tx_can_id;                     /**< 송신 CAN ID */
 
     /* 타임아웃 */
     uint32_t last_activity_tick;            /**< 마지막 활동 시간 (ms) */
 } ISO_TP_Context_t;
+
+/* === OTA 스트림 싱크 (대용량 수신용, > MAX_MESSAGE_SIZE) ===
+ * 메시지가 MAX_MESSAGE_SIZE(4095)를 초과하면 rx_buffer에 통째로 담을 수 없다.
+ * 대신 등록된 싱크로 CF 청크를 순차 전달하여 (예: 플래시 순차 기록)
+ * 버퍼링 없이 대용량 전송(OTA)을 처리한다. 싱크 미등록 시 >4095 FF는
+ * FC_OVERFLOW 로 거부된다.
+ */
+typedef enum {
+    ISO_TP_STREAM_BEGIN,  /**< 전송 시작 (total_size 전달, data=NULL, len=0) */
+    ISO_TP_STREAM_DATA,   /**< 데이터 청크 (data, len 유효) */
+    ISO_TP_STREAM_END,    /**< 전송 완료 */
+    ISO_TP_STREAM_ERROR   /**< 중단 (타임아웃/seq 오류) */
+} ISO_TP_StreamEvent_t;
+
+typedef void (*ISO_TP_StreamSink_t)(ISO_TP_StreamEvent_t event,
+                                    const uint8_t *data,
+                                    uint32_t len,
+                                    uint32_t total_size);
 
 /* === API === */
 
@@ -120,6 +147,14 @@ void ISO_TP_SendResponse(uint32_t can_id, const uint8_t *data, uint16_t len);
  * @param  now_ms: 현재 시간 (ms)
  */
 void ISO_TP_Tick(uint32_t now_ms);
+
+/**
+ * @brief  OTA 스트림 싱크 등록 (> MAX_MESSAGE_SIZE 수신용)
+ * @param  sink: 스트림 이벤트 콜백 (NULL = 스트림 비활성, >4095 FF 거부)
+ * @note   OTA 전송 시작 전 등록, 완료 후 해제(NULL) 권장.
+ *         싱크는 BEGIN→(DATA 반복)→END/ERROR 순으로 호출된다.
+ */
+void ISO_TP_RegisterStreamSink(ISO_TP_StreamSink_t sink);
 
 #ifdef __cplusplus
 }

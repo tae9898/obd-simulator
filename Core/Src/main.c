@@ -74,6 +74,39 @@ static void vMainTask(void *pvParameters);
 static void vCanRxTask(void *pvParameters);
 static void vRS485Task(void *pvParameters);
 static void Error_Handler_EnterSafeState(const char *msg);
+static void ota_stream_sink(ISO_TP_StreamEvent_t event,
+                            const uint8_t *data, uint32_t len, uint32_t total_size);
+
+/**
+ * @brief  OTA 스트림 싱크 (플레이스홀더)
+ * @note   ISO-TP 가 4095바이트 초과 메시지를 수신할 때 CF 청크를 순차 전달.
+ *         실제 OTA 에서는 각 청크를 플래시에 순차 기록(erase/program) 하도록
+ *         이 본문을 교체. HAL Flash 드라이버(stm32g4xx_hal_flash) 는 빌드에
+ *         이미 포함되어 있음. 현재는 BEGIN/END/ERROR 만 로깅 (CF 단위 로깅은
+ *         UART 플러딩 방지용 생략).
+ */
+static void ota_stream_sink(ISO_TP_StreamEvent_t event,
+                            const uint8_t *data, uint32_t len, uint32_t total_size)
+{
+    (void)data;
+    (void)len;
+
+    switch (event) {
+        case ISO_TP_STREAM_BEGIN:
+            Debug_Print("[OTA] stream begin total=%lu bytes\r\n", (unsigned long)total_size);
+            break;
+        case ISO_TP_STREAM_END:
+            Debug_Print("[OTA] stream end (%lu bytes received)\r\n", (unsigned long)total_size);
+            break;
+        case ISO_TP_STREAM_ERROR:
+            Debug_Print("[OTA] stream ERROR (timeout/seq), transfer aborted\r\n");
+            break;
+        case ISO_TP_STREAM_DATA:
+        default:
+            /* CF 단위 로깅 생략 (플러딩 방지) */
+            break;
+    }
+}
 
 /**
  * @brief  메인 진입점
@@ -114,6 +147,9 @@ int main(void)
     DiagSession_Init();
     UDS_Init();
     ISO_TP_Init();
+
+    /* OTA 스트림 싱크 등록 (>4095바이트 수신 시 CF 청크를 싱크로 전달) */
+    ISO_TP_RegisterStreamSink(ota_stream_sink);
 
     /* --- FDCAN1 초기화 (CAN-FD: 아비트레이션 500kbps / 데이터 2Mbps, BRS) --- */
     if (FDCAN1_InitFD(&hfdcan1) != HAL_OK) {
