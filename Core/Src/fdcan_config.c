@@ -13,6 +13,48 @@
 static uint8_t s_rx_data[64];
 static FDCAN_RxHeaderTypeDef s_rx_header;
 
+/* === DLC 코드(0~15) → 실제 바이트 수 변환 테이블 ===
+ * HAL FDCAN: HAL_FDCAN_GetRxMessage 가 채우는 rx_header.DataLength 는
+ * raw DLC 코드(0~15) 이다 (HAL 이 R1[19:16] 에서 >>16 로 추출).
+ * Classic(0~8) 은 코드 == 바이트 수이지만, FD(9~15) 는 12/16/20/24/32/48/64.
+ * HAL 내부 DLCtoBytes[] 와 동일한 매핑.
+ */
+static const uint8_t DLC_CODE_TO_BYTES[16] = {
+    0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U,
+    12U, 16U, 20U, 24U, 32U, 48U, 64U
+};
+
+/**
+ * @brief  바이트 수 → FDCAN DLC 코드(raw, 0~15) 변환
+ * @note   HAL 규칙: TxHeader.DataLength 에는 raw 코드를 넘긴다
+ *         (HAL 이 내부에서 <<16 하여 R1[19:16] 에 기록).
+ *         CAN-FD 유효 DLC 사이즈(8/12/16/20/24/32/48/64)로 올림.
+ */
+uint32_t FDCAN_BytesToDlc(uint8_t bytes)
+{
+    uint32_t dlc;
+
+    if (bytes <= 8U) {
+        dlc = (uint32_t)bytes;             /* 코드 0~8 == 바이트 수 */
+    } else if (bytes <= 12U) {
+        dlc = FDCAN_DLC_BYTES_12;          /* 0x9 */
+    } else if (bytes <= 16U) {
+        dlc = FDCAN_DLC_BYTES_16;          /* 0xA */
+    } else if (bytes <= 20U) {
+        dlc = FDCAN_DLC_BYTES_20;          /* 0xB */
+    } else if (bytes <= 24U) {
+        dlc = FDCAN_DLC_BYTES_24;          /* 0xC */
+    } else if (bytes <= 32U) {
+        dlc = FDCAN_DLC_BYTES_32;          /* 0xD */
+    } else if (bytes <= 48U) {
+        dlc = FDCAN_DLC_BYTES_48;          /* 0xE */
+    } else {
+        dlc = FDCAN_DLC_BYTES_64;          /* 0xF → 64 */
+    }
+
+    return dlc;
+}
+
 /**
  * @brief  FDCAN1 주변기기 초기화
  * @param  hfdcan: FDCAN 핸들러 포인터
@@ -34,15 +76,16 @@ HAL_StatusTypeDef FDCAN1_Init(FDCAN_HandleTypeDef *hfdcan)
     /* --- FDCAN 인스턴스 설정 --- */
     hfdcan->Instance                 = FDCAN1;
     hfdcan->Init.FrameFormat         = FDCAN_FRAME_CLASSIC;  /* Classic CAN */
-    hfdcan->Init.Mode                = FDCAN_MODE_NORMAL;    /* 노멀 모드 */
+    hfdcan->Init.Mode                = FDCAN_MODE_NORMAL;    /* 노멀 모드 (ACK + 송신) */
     hfdcan->Init.AutoRetransmission  = ENABLE;   /* 자동 재전송 활성화 */
     hfdcan->Init.TransmitPause       = DISABLE;  /* 전송 일시정지 비활성화 */
     hfdcan->Init.ProtocolException   = DISABLE;  /* 프로토콜 예외 비활성화 */
 
     /* --- 비트 타이밍 설정 (Classic CAN 500kbps) --- */
     /*
+     * FDCAN 클럭 = HSE 24MHz (Nucleo-G431RB MB1367 크리스탈)
      * bitrate = fcan / (prescaler * (1 + TimeSegment1 + TimeSegment2))
-     * 8MHz / (1 * (1 + 13 + 2)) = 8MHz / 16 = 500kbps
+     * 24MHz / (3 * (1 + 13 + 2)) = 24MHz / 48 = 500kbps (SP 87.5%)
      */
     hfdcan->Init.NominalPrescaler    = FDCAN_PRESCALER;     /* 1 */
     hfdcan->Init.NominalSyncJumpWidth = FDCAN_SJW;          /* 1 */
@@ -142,13 +185,14 @@ HAL_StatusTypeDef FDCAN1_ConfigureFilters(FDCAN_HandleTypeDef *hfdcan)
 {
     FDCAN_FilterTypeDef filter_config;
 
-    /* 필터 구조체 초기화 */
+    /* 필터: RANGE 0x000~0x7FF (모든 표준 프레임) -> RX FIFO0
+     * 루프백 테스트에서 검증된 구성. (이전 MASK 필터가 외부 수신 시 동작하지 않아 RANGE로 변경) */
     filter_config.IdType       = FDCAN_STANDARD_ID;
     filter_config.FilterIndex  = 0U;
-    filter_config.FilterType   = FDCAN_FILTER_MASK;
+    filter_config.FilterType   = FDCAN_FILTER_RANGE;
     filter_config.FilterConfig = FDCAN_FILTER_TO_RXFIFO0;
-    filter_config.FilterID1    = OBD2_REQUEST_ID;  /* 0x7E0 */
-    filter_config.FilterID2    = 0x7FFU;           /* 전체 비트 일치 마스크 */
+    filter_config.FilterID1    = 0x000U;
+    filter_config.FilterID2    = 0x7FFU;
 
     /* HAL 필터 설정 API 호출 */
     if (HAL_FDCAN_ConfigFilter(hfdcan, &filter_config) != HAL_OK) {
@@ -156,7 +200,16 @@ HAL_StatusTypeDef FDCAN1_ConfigureFilters(FDCAN_HandleTypeDef *hfdcan)
         return HAL_ERROR;
     }
 
-    Debug_Print("[FDCAN] Filter OK - ID 0x%03X -> FIFO0\r\n", OBD2_REQUEST_ID);
+    /* 수신 경로 레지스터 덤프 (글로벌 필터 확인 - STM32G4는 RXF0C 없음, FIFO0 크기 고정) */
+    {
+        uint32_t rxgfc = hfdcan->Instance->RXGFC;
+        Debug_Print("[FILT] RXGFC=0x%08lX (ANFS=%lu LSS=%lu RRFE=%lu)\r\n",
+                    (unsigned long)rxgfc, (unsigned long)(rxgfc & 0x3UL),
+                    (unsigned long)((rxgfc >> 16UL) & 0x7UL),
+                    (unsigned long)((rxgfc >> 7UL) & 0x1UL));
+    }
+
+    Debug_Print("[FDCAN] Filter OK - RANGE 0x000-0x7FF -> FIFO0\r\n");
     return HAL_OK;
 }
 
@@ -233,11 +286,20 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan,
         if (status == HAL_OK) {
             CAN_RxMessage_t rx_msg;
             rx_msg.can_id = s_rx_header.Identifier;
-            rx_msg.dlc    = (uint8_t)(s_rx_header.DataLength >> 16U);
 
-            /* data 배열 복사 (최대 16바이트) */
+            /* DLC 코드(0~15) → 실제 바이트 수. HAL 은 raw 코드를 주므로
+             * 과거의 ">> 16" 디코딩(항상 0이 되는 버그) 대신 테이블 사용. */
+            uint8_t dlc_code = (uint8_t)(s_rx_header.DataLength & 0xFU);
+            uint8_t byte_len = DLC_CODE_TO_BYTES[dlc_code];
+            if (byte_len > 64U) {
+                byte_len = 64U;   /* 방어 (정상이면 발생 안 함) */
+            }
+            rx_msg.dlc = byte_len;
+
+            /* data 배열 복사 (CAN-FD 최대 64바이트).
+             * HAL 이 s_rx_data 에 이미 byte_len 만큼 채워 넣었음. */
             (void)memset(rx_msg.data, 0, sizeof(rx_msg.data));
-            for (uint8_t i = 0U; i < rx_msg.dlc && i < 16U; i++) {
+            for (uint8_t i = 0U; i < byte_len; i++) {
                 rx_msg.data[i] = s_rx_data[i];
             }
 
@@ -245,9 +307,13 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan,
             xQueueSendFromISR(xCanRxQueue, &rx_msg, &xHigherPriorityTaskWoken);
         }
 
+        /* 모든 인터럽트 재활성화 (RX + 에러) */
         HAL_FDCAN_ActivateNotification(
             hfdcan,
-            FDCAN_IT_RX_FIFO0_NEW_MESSAGE,
+            FDCAN_IT_RX_FIFO0_NEW_MESSAGE
+          | FDCAN_IT_ERROR_WARNING
+          | FDCAN_IT_ERROR_PASSIVE
+          | FDCAN_IT_BUS_OFF,
             0U
         );
 

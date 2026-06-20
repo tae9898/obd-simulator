@@ -20,6 +20,7 @@ C_SOURCES = \
 Core/Src/main.c \
 Core/Src/obd2_simulator.c \
 Core/Src/fdcan_config.c \
+Core/Src/fdcan_loopback_test.c \
 Core/Src/uart_debug.c \
 Core/Src/iso_tp.c \
 Core/Src/uds_service.c \

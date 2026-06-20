@@ -61,6 +61,16 @@ HAL_StatusTypeDef FDCAN1_StartNotification(FDCAN_HandleTypeDef *hfdcan);
 void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan,
                                 uint32_t RxFifo0ITs);
 
+/**
+ * @brief  바이트 수 → FDCAN DLC 코드(raw, 0~15) 변환
+ * @param  bytes: 실제 데이터 바이트 수 (0~64)
+ * @retval HAL FDCAN DLC 코드 (FDCAN_DLC_BYTES_* 매크로와 동일 인코딩)
+ * @note   HAL 규칙: TxHeader.DataLength 에는 raw 코드를 넘긴다
+ *         (HAL 이 내부에서 <<16). CAN-FD 유효 DLC 사이즈
+ *         (8/12/16/20/24/32/48/64)로 올림(round-up).
+ */
+uint32_t FDCAN_BytesToDlc(uint8_t bytes);
+
 #ifdef __cplusplus
 }
 #endif

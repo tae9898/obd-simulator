@@ -25,7 +25,8 @@ void HAL_FDCAN_MspInit(FDCAN_HandleTypeDef *hfdcan)
     __HAL_RCC_FDCAN_CLK_ENABLE();
 
     /* --- FDCAN1 핀 GPIO 클럭 활성화 --- */
-    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();   /* PA12 (TX) */
+    __HAL_RCC_GPIOB_CLK_ENABLE();   /* PB8 (RX) — PA11 손상으로 이관 */
 
     /* --- FDCAN1_TX (PA12) GPIO 설정 --- */
     GPIO_InitStruct.Pin       = FDCAN1_TX_PIN;
@@ -35,7 +36,7 @@ void HAL_FDCAN_MspInit(FDCAN_HandleTypeDef *hfdcan)
     GPIO_InitStruct.Alternate = FDCAN1_TX_AF;  /* AF9 */
     HAL_GPIO_Init(FDCAN1_TX_PORT, &GPIO_InitStruct);
 
-    /* --- FDCAN1_RX (PA11) GPIO 설정 --- */
+    /* --- FDCAN1_RX (PB8) GPIO 설정 --- */
     GPIO_InitStruct.Pin       = FDCAN1_RX_PIN;
     GPIO_InitStruct.Mode      = GPIO_MODE_AF_PP;
     GPIO_InitStruct.Pull      = GPIO_PULLUP;   /* RX는 풀업 권장 */

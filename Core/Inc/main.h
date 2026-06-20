@@ -22,8 +22,8 @@ extern "C" {
 /* === CAN 수신 메시지 구조체 (ISR → Task 전달용) === */
 typedef struct {
     uint32_t can_id;        /**< 수신 CAN ID */
-    uint8_t  data[16];      /**< 수신 데이터 (CAN-FD 최대 16바이트) */
-    uint8_t  dlc;           /**< 데이터 길이 */
+    uint8_t  data[64];      /**< 수신 데이터 (CAN-FD 최대 64바이트) */
+    uint8_t  dlc;           /**< 데이터 길이 (바이트 수, 0~64) */
 } CAN_RxMessage_t;
 
 /** CAN RX Queue 깊이: 동시에 대기 가능한 최대 메시지 수 */
@@ -36,7 +36,7 @@ extern QueueHandle_t xCanRxQueue;
 extern SemaphoreHandle_t xUartMutex;
 
 /* === 핀 정의 === */
-/** FDCAN1 RX - MCP2562FD RXD (PA11) */
+/** FDCAN1 RX - MCP2562FD RXD (PB8) — PA11 손상으로 이관 */
 #define FDCAN1_RX_PIN         GPIO_PIN_11
 #define FDCAN1_RX_PORT        GPIOA
 #define FDCAN1_RX_AF          GPIO_AF9_FDCAN1
@@ -84,31 +84,40 @@ extern SemaphoreHandle_t xUartMutex;
 /** APB2 버스 주파수 (Hz) - APB2 prescaler = 2 */
 #define PCLK2_FREQ            (SYSCLK_FREQ / 2U)
 
-/* === FDCAN 클럭 설정 === */
-/**
- * FDCAN 클럭 소스: HSE 8MHz (PLLQ가 아닌 HSE 직접 사용)
- * Classic CAN 500kbps 설정 (아비트레이션 페이스):
- *   bitrate = fcan / (prescaler * (1 + TimeSegment1 + TimeSegment2))
- *   8MHz / (1 * (1 + 13 + 2)) = 500kbps
+/* === FDCAN 클럭 설정 ===
+ * !! HSE 크리스탈(24MHz, Nucleo-G431RB MB1367 탑재 — UM2505 스펙)을 FDCAN 클럭으로 사용.
+ *    과거 HSE_VALUE=8MHz 는 오기(실제 24MHz). PLLQ->FDCAN 경로는 본 보드에서 불량.
+ *    HSI(±1~1.5%) 기반 PCLK1 은 CAN 오실레이터 톨러런스 한계를 넘어 Form Error(LEC=2) 발생 →
+ *    정밀 HSE 크리스탈(±50ppm) 로 해결. SystemClock_Config 에서 RCC_FDCANCLKSOURCE_HSE.
+ *
+ * Classic CAN 500kbps @ HSE 24MHz:
+ *   24MHz / (3 * (1 + 13 + 2)) = 24MHz / 48 = 500kbps
+ *   샘플 포인트 = (1+13)/16 = 87.5%  (CANable 87% 에 일치)
  */
-#define FDCAN_CLK_FREQ        HSE_VALUE
-#define FDCAN_PRESCALER       1U
+#define FDCAN_CLK_FREQ        24000000U
+#define FDCAN_PRESCALER       3U
 #define FDCAN_TIME_SEG1       13U
-#define FDCAN_TIME_SEG2       2U
-#define FDCAN_SJW             1U
+#define FDCAN_TIME_SEG2        2U
+#define FDCAN_SJW              2U
 
 /* === CAN-FD 데이터 페이스 설정 === */
 /**
  * CAN-FD 데이터 페이스 2Mbps:
  *   bitrate = fcan / (prescaler * (1 + TimeSegment1 + TimeSegment2))
- *   8MHz / (1 * (1 + 2 + 1)) = 8MHz / 4 = 2Mbps
+ *   FDCAN 클럭 = HSE 24MHz (FDCAN_CLK_FREQ 참조)
+ *   24MHz / (1 * (1 + 10 + 1)) = 24MHz / 12 = 2Mbps
+ *   샘플 포인트 = (1 + 10) / 12 = 91.7%
+ *
+ * !! 과거 주석은 "8MHz / (1*(1+2+1)) = 2Mbps" 였으나, FDCAN 클럭이
+ *    HSE 24MHz 로 확정됨에 따라 실제로는 6Mbps 로 잡히는 오류였음.
+ *    24MHz 기준 2Mbps 가 되도록 TimeSegment 재산정.
  *
  * CAN-FD는 두 개의 비트 전송 속도를 가짐:
  *   - 아비트레이션 페이스: 기존 500kbps (버스 충돌 판정용)
  *   - 데이터 페이스: 2Mbps (실제 데이터 전송, BRS 활성화 시에만)
  */
 #define FDCAN_DATA_PRESCALER  1U
-#define FDCAN_DATA_TIME_SEG1  2U
+#define FDCAN_DATA_TIME_SEG1  10U
 #define FDCAN_DATA_TIME_SEG2  1U
 #define FDCAN_DATA_SJW        1U
 

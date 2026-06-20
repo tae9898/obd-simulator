@@ -17,6 +17,7 @@
 
 #include "iso_tp.h"
 #include "uds_service.h"
+#include "fdcan_config.h"
 #include "uart_debug.h"
 #include <string.h>
 
@@ -37,7 +38,6 @@ static void send_first_frame(uint32_t can_id, const uint8_t *data, uint16_t tota
 static void send_consecutive_frames(void);
 static void send_flow_control(uint32_t can_id, uint8_t fs, uint8_t bs, uint8_t stmin);
 static void dispatch_completed_message(void);
-static uint32_t bytes_to_dlc(uint8_t bytes);
 
 /* === 외부 FDCAN 핸들러 (main.c에 정의) === */
 extern FDCAN_HandleTypeDef hfdcan1;
@@ -129,7 +129,7 @@ void ISO_TP_Tick(uint32_t now_ms)
  * ==================================================== */
 
 /**
- * @brief  Single Frame 처리 (15바이트 이하)
+ * @brief  Single Frame 처리 (CAN-FD: 62바이트 이하, escape SF)
  *
  * PCI: 0x0N (N = 페이로드 길이)
  * 예: [03, 0x41, 0x0C, 0x27, 0x10] → 3바이트 페이로드
@@ -179,10 +179,10 @@ static void process_first_frame(uint32_t can_id, const uint8_t *data, uint8_t dl
         return;
     }
 
-    /* FF 페이로드: byte2부터 (최대 14바이트) */
+    /* FF 페이로드: byte2부터 (CAN-FD 최대 62바이트 = 64 - 2바이트 PCI) */
     uint8_t ff_payload = (uint8_t)(dlc - 2U);
-    if (ff_payload > 14U) {
-        ff_payload = 14U;
+    if (ff_payload > (ISO_TP_FRAME_SIZE - 2U)) {
+        ff_payload = (uint8_t)(ISO_TP_FRAME_SIZE - 2U);   /* 62 */
     }
 
     (void)memcpy(s_ctx.rx_buffer, &data[2], ff_payload);
@@ -271,10 +271,22 @@ static void process_flow_control(const uint8_t *data, uint8_t dlc)
 static void send_single_frame(uint32_t can_id, const uint8_t *data, uint16_t len)
 {
     uint8_t frame[ISO_TP_FRAME_SIZE];
+    uint8_t used;   /* 프레임에 실제 사용한 바이트 수 */
+
     (void)memset(frame, 0xCCU, sizeof(frame));
 
-    frame[0] = (uint8_t)(ISO_TP_PCI_SINGLE_FRAME | (len & 0x0FU));
-    (void)memcpy(&frame[1], data, len);
+    if (len <= 7U) {
+        /* Classic SF: byte0 = 0x0N (하위 니블 = 길이) */
+        frame[0] = (uint8_t)(ISO_TP_PCI_SINGLE_FRAME | (uint8_t)(len & 0x0FU));
+        (void)memcpy(&frame[1], data, len);
+        used = (uint8_t)(len + 1U);
+    } else {
+        /* CAN-FD escape SF: byte0 = 0x00, byte1 = 길이(8~62) */
+        frame[0] = ISO_TP_PCI_SINGLE_FRAME;   /* 0x00 */
+        frame[1] = (uint8_t)len;
+        (void)memcpy(&frame[2], data, len);
+        used = (uint8_t)(len + 2U);
+    }
 
     FDCAN_TxHeaderTypeDef tx_header;
     tx_header.Identifier          = can_id;
@@ -285,7 +297,7 @@ static void send_single_frame(uint32_t can_id, const uint8_t *data, uint16_t len
     tx_header.FDFormat            = FDCAN_FD_CAN;
     tx_header.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
     tx_header.MessageMarker       = 0U;
-    tx_header.DataLength          = bytes_to_dlc((uint8_t)(len + 1U));
+    tx_header.DataLength          = FDCAN_BytesToDlc(used);
 
     if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx_header, frame) != HAL_OK) {
         Debug_Print("[ISO-TP] SF TX failed\r\n");
@@ -299,9 +311,13 @@ static void send_first_frame(uint32_t can_id, const uint8_t *data, uint16_t tota
     frame[0] = (uint8_t)(ISO_TP_PCI_FIRST_FRAME | ((total_len >> 8U) & 0x0FU));
     frame[1] = (uint8_t)(total_len & 0xFFU);
 
-    /* FF 페이로드: 최대 14바이트 */
-    (void)memcpy(&frame[2], data, 14U);
-    s_ctx.tx_sent = 14U;
+    /* FF 페이로드: 최대 62바이트 (64 - 2바이트 PCI) */
+    uint16_t ff_payload = total_len;
+    if (ff_payload > (ISO_TP_FRAME_SIZE - 2U)) {
+        ff_payload = (uint16_t)(ISO_TP_FRAME_SIZE - 2U);   /* 62 */
+    }
+    (void)memcpy(&frame[2], data, ff_payload);
+    s_ctx.tx_sent = ff_payload;
 
     FDCAN_TxHeaderTypeDef tx_header;
     tx_header.Identifier          = can_id;
@@ -312,7 +328,7 @@ static void send_first_frame(uint32_t can_id, const uint8_t *data, uint16_t tota
     tx_header.FDFormat            = FDCAN_FD_CAN;
     tx_header.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
     tx_header.MessageMarker       = 0U;
-    tx_header.DataLength          = FDCAN_DLC_BYTES_16;
+    tx_header.DataLength          = FDCAN_DLC_BYTES_64;
 
     if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx_header, frame) != HAL_OK) {
         Debug_Print("[ISO-TP] FF TX failed\r\n");
@@ -332,7 +348,7 @@ static void send_consecutive_frames(void)
         frame[0] = (uint8_t)(ISO_TP_PCI_CONSECUTIVE | (s_ctx.tx_seq & 0x0FU));
 
         uint16_t remaining = s_ctx.tx_total_size - s_ctx.tx_sent;
-        uint8_t cf_payload = 15U;
+        uint8_t cf_payload = ISO_TP_CF_PAYLOAD_SIZE;   /* 63 */
         if ((uint16_t)cf_payload > remaining) {
             cf_payload = (uint8_t)remaining;
         }
@@ -348,7 +364,7 @@ static void send_consecutive_frames(void)
         tx_header.FDFormat            = FDCAN_FD_CAN;
         tx_header.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
         tx_header.MessageMarker       = 0U;
-        tx_header.DataLength          = bytes_to_dlc((uint8_t)(cf_payload + 1U));
+        tx_header.DataLength          = FDCAN_BytesToDlc((uint8_t)(cf_payload + 1U));
 
         if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx_header, frame) != HAL_OK) {
             Debug_Print("[ISO-TP] CF TX failed\r\n");
@@ -413,24 +429,4 @@ static void dispatch_completed_message(void)
     }
 
     s_ctx.state = ISO_TP_IDLE;
-}
-
-/**
- * @brief  바이트 수를 FDCAN DLC 코드로 변환
- */
-static uint32_t bytes_to_dlc(uint8_t bytes)
-{
-    if (bytes <= 8U) {
-        return (uint32_t)bytes << 16U;
-    }
-    switch (bytes) {
-        case 12: return FDCAN_DLC_BYTES_12;
-        case 16: return FDCAN_DLC_BYTES_16;
-        case 20: return FDCAN_DLC_BYTES_20;
-        case 24: return FDCAN_DLC_BYTES_24;
-        case 32: return FDCAN_DLC_BYTES_32;
-        case 48: return FDCAN_DLC_BYTES_48;
-        case 64: return FDCAN_DLC_BYTES_64;
-        default: return FDCAN_DLC_BYTES_16;
-    }
 }

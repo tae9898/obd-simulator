@@ -32,7 +32,8 @@ extern "C" {
 
 /* === RS485 파라미터 === */
 #define RS485_BAUDRATE        115200U
-#define RS485_MAX_DATA_LEN    64U
+/* CAN-FD 64바이트 페이로드 + 헤더 3바이트(ID_H, ID_L, DLC) = 67바이트 */
+#define RS485_MAX_DATA_LEN    67U
 #define RS485_RX_QUEUE_LEN    8U
 
 /* === RS485 수신 메시지 구조체 === */

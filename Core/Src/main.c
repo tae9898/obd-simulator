@@ -23,6 +23,18 @@
 #include "FreeRTOS.h"
 #include "task.h"
 
+/* === FDCAN 루프백 진단 모드 (1=테스트 실행, 0=정상 앱) ===
+ * MCU FDCAN 주변기기 자체 정상 여부를 검증하는 내부 루프백 테스트.
+ * 1로 설정하면 정상 OBD/UDS 앱 대신 루프백 테스트만 실행한다(복귀 안 함).
+ * !! 루프백 테스트 결과: MCU FDCAN 정상(PLLQ 클럭 불량이 원인).
+ *    현재 앱은 PCLK1 클럭으로 수정됨 -> 0(정상 앱)으로 사용.
+ */
+#define RUN_FDCAN_LOOPBACK_TEST 0
+
+#if RUN_FDCAN_LOOPBACK_TEST
+#include "fdcan_loopback_test.h"
+#endif
+
 /* === 핸들러 전역 변수 === */
 FDCAN_HandleTypeDef hfdcan1;   /* FDCAN1 핸들러 */
 UART_HandleTypeDef  huart2;    /* USART2 핸들러 (디버그) */
@@ -46,8 +58,11 @@ IWDG_HandleTypeDef hiwdg;
 /* === 태스크 생존 플래그 (IWDG 감시용) === */
 volatile uint8_t g_task_alive_flags = 0U;
 
-/* === FDCAN 버스오프 이벤트 (ISR → Task) === */
+/* === FDCAN 에러 이벤트 (ISR → Task) === */
 volatile uint8_t g_fdcan_busoff_detected = 0U;
+volatile uint8_t g_fdcan_error_flags = 0U;      /* bit0=warning, bit1=passive */
+volatile uint16_t g_fdcan_last_tec = 0U;
+volatile uint16_t g_fdcan_last_rec = 0U;
 
 /* === LED 토글 카운터 === */
 static uint32_t s_led_tick_counter = 0;
@@ -90,12 +105,17 @@ int main(void)
     Debug_Print("[INIT] STM32G431RB Nucleo Board\r\n");
     Debug_Print("[INIT] SYSCLK = %lu MHz\r\n", SYSCLK_FREQ / 1000000U);
 
+#if RUN_FDCAN_LOOPBACK_TEST
+    /* --- FDCAN 내부 루프백 진단 모드: 정상 앱 초기화 생략, 테스트만 실행 --- */
+    FDCAN_LoopbackTest_Run();   /* 복귀하지 않음 (무한 루프) */
+#endif
+
     /* --- UDS / 세션 / ISO-TP 초기화 --- */
     DiagSession_Init();
     UDS_Init();
     ISO_TP_Init();
 
-    /* --- FDCAN1 초기화 (CAN-FD: 500kbps arb / 2Mbps data) --- */
+    /* --- FDCAN1 초기화 (CAN-FD: 아비트레이션 500kbps / 데이터 2Mbps, BRS) --- */
     if (FDCAN1_InitFD(&hfdcan1) != HAL_OK) {
         Debug_Print("[ERROR] FDCAN1_InitFD failed\r\n");
         /* FDCAN 초기화 실패 - LED 빠른 깜빡임 */
@@ -118,6 +138,12 @@ int main(void)
         }
     }
 
+    /* === 글로벌 필터: 모든 표준 프레임 RX FIFO0로 수락 === */
+    HAL_FDCAN_ConfigGlobalFilter(&hfdcan1,
+        FDCAN_ACCEPT_IN_RX_FIFO0, FDCAN_REJECT,
+        FDCAN_FILTER_REMOTE, FDCAN_REJECT_REMOTE);
+    Debug_Print("[FILTER] Global: all std frames -> RX FIFO0\r\n");
+
     /* --- FDCAN1 RX 인터럽트 활성화 --- */
     if (FDCAN1_StartNotification(&hfdcan1) != HAL_OK) {
         Debug_Print("[ERROR] FDCAN1 notification failed\r\n");
@@ -129,7 +155,8 @@ int main(void)
         }
     }
 
-    Debug_Print("[INIT] FDCAN1 ready - CAN-FD 500kbps/2Mbps\r\n");
+    Debug_Print("[INIT] FDCAN1 ready - CAN-FD 500kbps/2Mbps (BRS) @ HSE 24MHz\r\n");
+
     Debug_Print("[INIT] Listening on CAN ID 0x%03X\r\n", OBD2_REQUEST_ID);
     Debug_Print("[INIT] UDS Services: 0x10, 0x11, 0x22, 0x27, 0x31\r\n");
     Debug_Print("[INIT] OBD-II PIDs: 0x00, 0x05, 0x0C, 0x0D\r\n");
@@ -156,12 +183,8 @@ int main(void)
         }
     }
 
-    /* --- IWDG 초기화 (Independent Watchdog) ---
-     * LSI ~32kHz / Prescaler 32 = 1kHz (1ms/tick)
-     * Reload 2000 → 타임아웃 2초
-     * vMainTask에서 500ms마다 리프레시 (여유 1.5초)
-     * 모든 초기화 완료 후 시작 (초기화 중 타임아웃 방지)
-     */
+    /* --- IWDG 초기화 (임시 비활성화, 디버그용) --- */
+#if 0
     hiwdg.Instance            = IWDG;
     hiwdg.Init.Prescaler      = IWDG_PRESCALER_32;
     hiwdg.Init.Reload         = 2000U;
@@ -171,6 +194,9 @@ int main(void)
         while (1);
     }
     Debug_Print("[IWDG] Watchdog started - timeout 2000ms, refresh every 500ms\r\n");
+#else
+    Debug_Print("[IWDG] DISABLED for debug\r\n");
+#endif
 
     /* --- 시뮬레이션 상태 초기값 설정 --- */
     g_sim_state.engine_rpm      = RPM_IDLE;
@@ -233,6 +259,7 @@ int main(void)
     xTaskCreate(vRS485Task, "RS485", 384, NULL, 2, NULL);
 
     Debug_Print("[RTOS] Starting FreeRTOS scheduler\r\n");
+
     vTaskStartScheduler();
 
     /* 스케줄러 시작 실패 시 도달 (heap 부족 등) */
@@ -252,6 +279,63 @@ static void vMainTask(void *pvParameters)
     (void)pvParameters;
 
     Debug_Print("[RTOS] Main task started\r\n");
+
+    /* --- 클럭 소스 + FDCAN 레지스터 덤프 --- */
+    {
+        uint32_t nbtp = hfdcan1.Instance->NBTP;
+        uint32_t nbrp    = ((nbtp >> 16) & 0x1FF) + 1;
+        uint32_t ntseg1  = ((nbtp >>  8) & 0xFF)  + 1;
+        uint32_t ntseg2  = ((nbtp >>  0) & 0x7F)  + 1;
+        uint32_t nsjw    = ((nbtp >> 25) & 0x7F)  + 1;
+        uint32_t bitrate = FDCAN_CLK_FREQ / (nbrp * (1 + ntseg1 + ntseg2));
+        Debug_Print("[CLOCK] NBTP=0x%08lX NBRP=%lu NTSEG1=%lu NTSEG2=%lu NSJW=%lu\r\n",
+                    nbtp, nbrp, ntseg1, ntseg2, nsjw);
+        Debug_Print("[CLOCK] Nominal bitrate = %lu bps (expect 500000)\r\n", bitrate);
+
+        /* 실제 FDCAN 클럭 소스 확인 (CCIPR[25:24] FDCANSEL: 0=HSE 1=PLLQ 2=PCLK1) */
+        uint32_t ccipr = RCC->CCIPR;
+        uint32_t fdsel = (ccipr >> 24) & 0x3;
+        const char *fdsrc = (fdsel == 0U) ? "HSE" : (fdsel == 1U) ? "PLLQ"
+                            : (fdsel == 2U) ? "PCLK1" : "reserved";
+        Debug_Print("[CLOCK] CCIPR=0x%08lX FDCANSEL=%s (10=PCLK1=확정)\r\n",
+                    ccipr, fdsrc);
+
+        /* PB8(FDCAN1_RX) 실제 GPIO 설정 확인 */
+        uint32_t moder = (GPIOB->MODER >> 16) & 0x3;   /* PB8: 0=in 1=out 2=AF 3=analog */
+        uint32_t afrh  = (GPIOB->AFR[1] >> 0) & 0xF;   /* PB8 AF: 9=FDCAN1 */
+        uint32_t pupdr = (GPIOB->PUPDR >> 16) & 0x3;    /* PB8: 0=none 1=PU 2=PD */
+        const char *m[] = {"INPUT","OUTPUT","AF","ANALOG"};
+        Debug_Print("[PB8] MODER=%s AFRH=%lu PUPDR=%lu IDR=%lu (AF,AFR=9 이 정상)\r\n",
+                    moder < 4 ? m[moder] : "?", afrh, pupdr,
+                    (GPIOB->IDR >> 8) & 0x1);
+    }
+
+    /* TX 테스트 없이 수신만 */
+    Debug_Print("[LISTEN] Waiting for CAN frames...\r\n");
+
+    /* === TX 테스트용 변수 (CAN-FD 64바이트 자가 검증) === */
+    static uint32_t s_tx_test_cnt = 0;
+    FDCAN_TxHeaderTypeDef tx_test_hdr = {0};
+    uint8_t tx_test_data[64];
+    /* 첫 5바이트: OBD-II Mode 01 PID 0x0C(RPM) 응답 형태.
+     * 나머지: 식별 가능한 테스트 패턴 (CAN-FD 64바이트 TX 경로 검증용). */
+    tx_test_data[0] = 0x04U;  /* ISO-TP SF 길이 */
+    tx_test_data[1] = 0x41U;  /* 0x01 + 0x40 = Mode 01 응답 */
+    tx_test_data[2] = 0x0CU;  /* PID 0x0C (엔진 RPM) */
+    tx_test_data[3] = 0x1FU;
+    tx_test_data[4] = 0x9AU;
+    for (uint8_t i = 5U; i < 64U; i++) {
+        tx_test_data[i] = (uint8_t)(0xA0U + i);
+    }
+    tx_test_hdr.Identifier          = 0x7E8U;  /* OBD-II 응답 ID */
+    tx_test_hdr.IdType              = FDCAN_STANDARD_ID;
+    tx_test_hdr.TxFrameType         = FDCAN_DATA_FRAME;
+    tx_test_hdr.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+    tx_test_hdr.BitRateSwitch       = FDCAN_BRS_ON;    /* CAN-FD BRS */
+    tx_test_hdr.FDFormat            = FDCAN_FD_CAN;    /* CAN-FD */
+    tx_test_hdr.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
+    tx_test_hdr.MessageMarker       = 0U;
+    tx_test_hdr.DataLength          = FDCAN_DLC_BYTES_64;
 
     while (1)
     {
@@ -287,6 +371,51 @@ static void vMainTask(void *pvParameters)
             /* 미확인 태스크가 있으면 리프레시 안 함 → 2초 후 리셋 */
         }
 
+        /* --- FDCAN RX FIFO 상태 주기적 체크 (디버그) --- */
+        {
+            static uint32_t diag_cnt = 0;
+            diag_cnt++;
+            if ((diag_cnt % 100U) == 0U) {  /* 1초마다 (100 * 10ms) */
+                uint32_t rxf0s = hfdcan1.Instance->RXF0S;
+                uint32_t ecr   = hfdcan1.Instance->ECR;
+                uint32_t psr   = hfdcan1.Instance->PSR;
+                uint32_t ir    = hfdcan1.Instance->IR;
+                uint32_t ie    = hfdcan1.Instance->IE;
+                Debug_Print("[FDCAN-DIAG] RXF0S=0x%02lX(FILL=%lu) TEC=%lu REC=%lu LEC=%lu IR=0x%08lX IE=0x%08lX\r\n",
+                            rxf0s, rxf0s & 0x7F,
+                            (ecr >> 16) & 0xFF, (ecr >> 8) & 0xFF, psr & 0x7,
+                            ir, ie);
+            }
+        }
+
+        /* --- PA11(RXD) 토글 감지: 매 반복마다 샘플링, LOW(dominant) 카운트 --- */
+        {
+            static uint32_t rx_low = 0;
+            static uint32_t rx_cnt = 0;
+            for (uint32_t i = 0; i < 60U; i++) {
+                if (((GPIOA->IDR >> 11) & 1U) == 0U) rx_low++;  /* PA11 LOW = dominant 감지 */
+            }
+            rx_cnt++;
+            if ((rx_cnt % 100U) == 0U) {  /* 1초마다 */
+                Debug_Print("[RX-SAMPLE] PA11 dominant(LOW) 감지=%lu/6000 (0=RXD 안 토글, 6000=stuck LOW)\r\n", rx_low);
+                rx_low = 0;
+            }
+        }
+
+        /* --- FDCAN 에러 로깅 (ISR → 플래그 → 여기서 출력) --- */
+        if (g_fdcan_error_flags != 0U) {
+            uint8_t flags = g_fdcan_error_flags;
+            g_fdcan_error_flags = 0U;
+            if (flags & 0x01U) {
+                Debug_Print("[FDCAN-WARN] Error Warning: TEC=%u REC=%u\r\n",
+                            g_fdcan_last_tec, g_fdcan_last_rec);
+            }
+            if (flags & 0x02U) {
+                Debug_Print("[FDCAN-ERR] Error Passive: TEC=%u REC=%u\r\n",
+                            g_fdcan_last_tec, g_fdcan_last_rec);
+            }
+        }
+
         /* --- FDCAN 버스오프 복구 (ISR에서 플래그만 설정, 여기서 처리) --- */
         if (g_fdcan_busoff_detected != 0U) {
             g_fdcan_busoff_detected = 0U;
@@ -312,6 +441,13 @@ static void vMainTask(void *pvParameters)
             Debug_Print("[FDCAN-FATAL] Bus-off recovery successful\r\n");
         }
 
+        /* --- 주기적 TX 테스트 (CAN-FD 64바이트 프레임, 2초 주기) --- */
+        s_tx_test_cnt++;
+        if ((s_tx_test_cnt % 200U) == 0U) {  /* 200 * 10ms = 2초 */
+            tx_test_data[5] = (uint8_t)(s_tx_test_cnt & 0xFFU);  /* 롤링 카운터 */
+            HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx_test_hdr, tx_test_data);
+        }
+
         /* --- 10ms 대기 (다른 태스크에 CPU 양보) --- */
         vTaskDelay(pdMS_TO_TICKS(SIM_UPDATE_PERIOD_MS));
     }
@@ -335,16 +471,19 @@ static void vCanRxTask(void *pvParameters)
 
     while (1)
     {
-        /* Queue에서 메시지 대기 (무한 대기, CPU 양보) */
-        if (xQueueReceive(xCanRxQueue, &rx_msg, portMAX_DELAY) == pdTRUE) {
+        /* 태스크 생존 알림 (항상 설정) */
+        g_task_alive_flags |= TASK_ALIVE_CAN_RX;
+
+        /* Queue에서 메시지 대기 (100ms 타임아웃, IWDG 리프레시 위해) */
+        if (xQueueReceive(xCanRxQueue, &rx_msg, pdMS_TO_TICKS(100)) == pdTRUE) {
+            /* 수신된 CAN 프레임 즉시 출력 (최대 64바이트까지, 디버그) */
+            Debug_LogCAN_Rx(rx_msg.can_id, rx_msg.data, rx_msg.dlc);
+
             /* ISO-TP → UDS 처리 */
             ISO_TP_ProcessFrame(rx_msg.can_id, rx_msg.data, rx_msg.dlc);
 
             /* CAN→RS485 포워딩 (RPi4로 전달) */
             RS485_ForwardCANMessage(rx_msg.can_id, rx_msg.data, rx_msg.dlc);
-
-            /* 태스크 생존 알림 */
-            g_task_alive_flags |= TASK_ALIVE_CAN_RX;
         }
     }
 }
@@ -364,29 +503,40 @@ static void vRS485Task(void *pvParameters)
 
     while (1)
     {
-        if (xQueueReceive(xRS485RxQueue, &rx_msg, portMAX_DELAY) == pdTRUE) {
-            /* 태스크 생존 알림 */
-            g_task_alive_flags |= TASK_ALIVE_RS485;
+        /* 태스크 생존 알림 (항상 설정) */
+        g_task_alive_flags |= TASK_ALIVE_RS485;
+
+        if (xQueueReceive(xRS485RxQueue, &rx_msg, pdMS_TO_TICKS(100)) == pdTRUE) {
 
             /* 최소 프레임 길이 확인: ID(2) + DLC(1) = 3바이트 */
             if (rx_msg.len >= 3U) {
                 uint32_t can_id = ((uint32_t)rx_msg.data[0] << 8) | (uint32_t)rx_msg.data[1];
                 uint8_t  dlc    = rx_msg.data[2];
 
-                if (dlc <= 8U && (3U + dlc) <= rx_msg.len) {
-                    /* RS485→CAN 포워딩 */
+                if (dlc <= 64U && (3U + dlc) <= rx_msg.len) {
+                    /* RS485→CAN 포워딩 (CAN-FD: FDF=1, BRS=1) */
                     FDCAN_TxHeaderTypeDef tx_header = {0};
                     tx_header.Identifier          = can_id;
                     tx_header.IdType              = FDCAN_STANDARD_ID;
                     tx_header.TxFrameType         = FDCAN_DATA_FRAME;
                     tx_header.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
-                    tx_header.BitRateSwitch       = FDCAN_BRS_OFF;
-                    tx_header.FDFormat            = FDCAN_CLASSIC_CAN;
+                    tx_header.BitRateSwitch       = FDCAN_BRS_ON;
+                    tx_header.FDFormat            = FDCAN_FD_CAN;
                     tx_header.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
                     tx_header.MessageMarker       = 0U;
+                    tx_header.DataLength          = FDCAN_BytesToDlc(dlc);
 
-                    if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx_header, &rx_msg.data[3]) == HAL_OK) {
-                        Debug_Print("[ROUTE] RS485→CAN ID:0x%03lX DLC:%u\r\n", can_id, dlc);
+                    /* CAN-FD 프레임의 HAL 전송은 round-up된 DLC 만큼 읽으므로
+                     * 64바이트 버퍼에 복사 + 패딩(0xCC) 후 전송. stale 버퍼
+                     * 잔여 바이트가 버스로 새어나가는 것을 방지. */
+                    uint8_t tx_data[64];
+                    (void)memset(tx_data, 0xCCU, sizeof(tx_data));
+                    for (uint8_t i = 0U; i < dlc; i++) {
+                        tx_data[i] = rx_msg.data[3U + i];
+                    }
+
+                    if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx_header, tx_data) == HAL_OK) {
+                        Debug_Print("[ROUTE] RS485→CAN ID:0x%03lX DLC:%u (FD)\r\n", can_id, dlc);
                     }
                 }
             }
@@ -432,21 +582,22 @@ static void Error_Handler_EnterSafeState(const char *msg)
 
 /**
  * @brief  FDCAN 에러 상태 콜백 (Warning / Passive)
- * @note   에러 카운터 변화 시 호출. 버스오프는 ErrorCallback에서 처리.
+ * @note   ISR 컨텍스트에서 호출 → 플래그만 설정 (Debug_Print 금지!)
+ *         실제 로깅은 vMainTask에서 처리
  */
 void HAL_FDCAN_ErrorStatusCallback(FDCAN_HandleTypeDef *hfdcan,
                                     uint32_t ErrorStatusITs)
 {
     uint32_t ecr = hfdcan->Instance->ECR;
-    uint32_t tec = (ecr >> 16) & 0xFFU;
-    uint32_t rec = (ecr >> 8) & 0xFFU;
+    g_fdcan_last_tec = (uint16_t)((ecr >> 16) & 0xFFU);
+    g_fdcan_last_rec = (uint16_t)((ecr >> 8) & 0xFFU);
 
     if ((ErrorStatusITs & FDCAN_IT_ERROR_WARNING) != 0U) {
-        Debug_Print("[FDCAN-WARN] Error Warning: TEC=%lu REC=%lu\r\n", tec, rec);
+        g_fdcan_error_flags |= 0x01U;
     }
 
     if ((ErrorStatusITs & FDCAN_IT_ERROR_PASSIVE) != 0U) {
-        Debug_Print("[FDCAN-ERR] Error Passive: TEC=%lu REC=%lu\r\n", tec, rec);
+        g_fdcan_error_flags |= 0x02U;
     }
 }
 
@@ -578,10 +729,11 @@ void SystemClock_Config(void)
         while (1);
     }
 
-    /** 4. FDCAN 클럭 소스 설정: HSE (8MHz 크리스탈)
-     *  @note  Nucleo 보드에 HSE 8MHz 크리스탈이 장착되어 있음
-     *         FDCAN_KERCK = HSE = 8MHz
-     *         Classic CAN 500kbps: 8MHz / (1*(1+13+2)) = 500kbps
+    /** 4. FDCAN 클럭 소스 설정: HSE 24MHz (정밀 크리스탈)
+     *  @note  !! Nucleo-G431RB(MB1367) HSE 크리스탈 = 24MHz (UM2505). 과거 8MHz 는 오기.
+     *         PLLQ->FDCAN 불량, HSI 기반 PCLK1 은 톨러런스 한계 초과(Form Error).
+     *         정밀 HSE 크리스탈(±50ppm) 사용. CCIPR[25:24] = 00 -> HSE.
+     *         Classic CAN 500kbps: 24MHz / (3*(1+13+2)) = 500kbps (SP 87.5%)
      */
     RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
     PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_FDCAN;

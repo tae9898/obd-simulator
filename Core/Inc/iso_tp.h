@@ -4,12 +4,12 @@
  * @note    단일/다중 프레임 조립·분할, CAN-FD 지원 (최대 64바이트)
  *
  * ISO-TP가 필요한 이유:
- *   CAN 프레임은 최대 16바이트(CAN-FD)만 실을 수 있지만,
+ *   CAN-FD 프레임은 최대 64바이트 페이로드를 실을 수 있지만,
  *   UDS 메시지는 그보다 길 수 있음.
- *   ISO-TP가 긴 메시지를 여러 CAN 프레임으로 쪼개고 반대편에서 조립.
+ *   ISO-TP가 긴 메시지를 여러 CAN-FD 프레임으로 쪼개고 반대편에서 조립.
  *
- *   15바이트 이하 → Single Frame (1프레임으로 끝)
- *   16바이트 이상 → First Frame + Consecutive Frame들 + Flow Control
+ *   62바이트 이하 → Single Frame (1프레임으로 끝, escape SF)
+ *   63바이트 이상 → First Frame + Consecutive Frame들 + Flow Control
  */
 
 #ifndef __ISO_TP_H
@@ -26,13 +26,13 @@ extern "C" {
 #define ISO_TP_MAX_MESSAGE_SIZE    64U
 
 /** CAN-FD 프레임 최대 페이로드 */
-#define ISO_TP_FRAME_SIZE          16U
+#define ISO_TP_FRAME_SIZE          64U
 
-/** Single Frame 최대 페이로드 (16 - 1바이트 PCI) */
-#define ISO_TP_SF_MAX_PAYLOAD      15U
+/** Single Frame 최대 페이로드 (64 - 2바이트 escape PCI) */
+#define ISO_TP_SF_MAX_PAYLOAD      62U
 
-/** Consecutive Frame 최대 페이로드 (16 - 1바이트 PCI) */
-#define ISO_TP_CF_PAYLOAD_SIZE     15U
+/** Consecutive Frame 최대 페이로드 (64 - 1바이트 PCI) */
+#define ISO_TP_CF_PAYLOAD_SIZE     63U
 
 /** Flow Control Block Size (0 = 무제한) */
 #define ISO_TP_FC_BLOCK_SIZE       0U

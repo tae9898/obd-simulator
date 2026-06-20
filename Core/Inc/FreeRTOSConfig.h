@@ -36,7 +36,7 @@
 /* === 메모리 관리 === */
 #define configSUPPORT_STATIC_ALLOCATION     0    /* 동적 할당만 사용 */
 #define configSUPPORT_DYNAMIC_ALLOCATION    1
-#define configTOTAL_HEAP_SIZE               8192U /* 8KB */
+#define configTOTAL_HEAP_SIZE               16384U /* 16KB */
 
 /* === 동기화 === */
 #define configUSE_MUTEXES                   1
