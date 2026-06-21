@@ -346,7 +346,7 @@ static void process_flow_control(const uint8_t *data, uint8_t dlc)
         return;
     }
 
-    uint8_t fs = data[1];  /* Flow Status */
+    uint8_t fs = (uint8_t)(data[0] & 0x0FU);  /* Flow Status: byte0 하위 니블 */
 
     if (fs == ISO_TP_FC_CONTINUE) {
         s_ctx.state = ISO_TP_TX_SEND_CF;
@@ -499,10 +499,10 @@ static void send_flow_control(uint32_t can_id, uint8_t fs, uint8_t bs, uint8_t s
     uint8_t frame[ISO_TP_FRAME_SIZE];
     (void)memset(frame, 0xCCU, sizeof(frame));
 
-    frame[0] = ISO_TP_PCI_FLOW_CONTROL;
-    frame[1] = fs;
-    frame[2] = bs;
-    frame[3] = stmin;
+    /* ISO 15765-2 FC: byte0=0x30|FS, byte1=BS, byte2=STmin */
+    frame[0] = (uint8_t)(ISO_TP_PCI_FLOW_CONTROL | (fs & 0x0FU));  /* FS */
+    frame[1] = bs;       /* Block Size */
+    frame[2] = stmin;    /* STmin */
 
     FDCAN_TxHeaderTypeDef tx_header;
     tx_header.Identifier          = can_id;
