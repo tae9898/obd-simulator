@@ -81,8 +81,8 @@ void OBD2_ProcessRequest(const FDCAN_RxHeaderTypeDef *pRxHeader,
         tx_header.TxFrameType         = FDCAN_DATA_FRAME;
         tx_header.DataLength          = FDCAN_DLC_BYTES_8;
         tx_header.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
-        tx_header.BitRateSwitch       = FDCAN_BRS_OFF;
-        tx_header.FDFormat            = FDCAN_CLASSIC_CAN;
+        tx_header.BitRateSwitch       = FDCAN_BRS_ON;
+        tx_header.FDFormat            = FDCAN_FD_CAN;
         tx_header.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
         tx_header.MessageMarker       = 0U;
 

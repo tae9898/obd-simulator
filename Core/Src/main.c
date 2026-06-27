@@ -151,7 +151,7 @@ int main(void)
     /* OTA 스트림 싱크 등록 (>4095바이트 수신 시 CF 청크를 싱크로 전달) */
     ISO_TP_RegisterStreamSink(ota_stream_sink);
 
-    /* --- FDCAN1 초기화 (CAN-FD: 아비트레이션 500kbps / 데이터 2Mbps, BRS) --- */
+    /* --- FDCAN1 초기화 (CAN-FD: 노멀 500kbps / 데이터 2Mbps, BRS) --- */
     if (FDCAN1_InitFD(&hfdcan1) != HAL_OK) {
         Debug_Print("[ERROR] FDCAN1_InitFD failed\r\n");
         /* FDCAN 초기화 실패 - LED 빠른 깜빡임 */
@@ -349,30 +349,6 @@ static void vMainTask(void *pvParameters)
     /* TX 테스트 없이 수신만 */
     Debug_Print("[LISTEN] Waiting for CAN frames...\r\n");
 
-    /* === TX 테스트용 변수 (CAN-FD 64바이트 자가 검증) === */
-    static uint32_t s_tx_test_cnt = 0;
-    FDCAN_TxHeaderTypeDef tx_test_hdr = {0};
-    uint8_t tx_test_data[64];
-    /* 첫 5바이트: OBD-II Mode 01 PID 0x0C(RPM) 응답 형태.
-     * 나머지: 식별 가능한 테스트 패턴 (CAN-FD 64바이트 TX 경로 검증용). */
-    tx_test_data[0] = 0x04U;  /* ISO-TP SF 길이 */
-    tx_test_data[1] = 0x41U;  /* 0x01 + 0x40 = Mode 01 응답 */
-    tx_test_data[2] = 0x0CU;  /* PID 0x0C (엔진 RPM) */
-    tx_test_data[3] = 0x1FU;
-    tx_test_data[4] = 0x9AU;
-    for (uint8_t i = 5U; i < 64U; i++) {
-        tx_test_data[i] = (uint8_t)(0xA0U + i);
-    }
-    tx_test_hdr.Identifier          = 0x7E8U;  /* OBD-II 응답 ID */
-    tx_test_hdr.IdType              = FDCAN_STANDARD_ID;
-    tx_test_hdr.TxFrameType         = FDCAN_DATA_FRAME;
-    tx_test_hdr.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
-    tx_test_hdr.BitRateSwitch       = FDCAN_BRS_ON;    /* CAN-FD BRS */
-    tx_test_hdr.FDFormat            = FDCAN_FD_CAN;    /* CAN-FD */
-    tx_test_hdr.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
-    tx_test_hdr.MessageMarker       = 0U;
-    tx_test_hdr.DataLength          = FDCAN_DLC_BYTES_64;
-
     while (1)
     {
         /* --- 시뮬레이션 값 업데이트 (10ms 주기) --- */
@@ -407,34 +383,26 @@ static void vMainTask(void *pvParameters)
             /* 미확인 태스크가 있으면 리프레시 안 함 → 2초 후 리셋 */
         }
 
-        /* --- FDCAN RX FIFO 상태 주기적 체크 (디버그) --- */
+        /* --- FDCAN error-passive 복구: REC>127 이 3초 지속 → Stop/Start 로 카운터 리셋 ---
+         * 부팅 직후 짧은 팬텀이 REC=255 로 고정되어 송신이 막히는 현상 회피. */
         {
-            static uint32_t diag_cnt = 0;
-            diag_cnt++;
-            if ((diag_cnt % 100U) == 0U) {  /* 1초마다 (100 * 10ms) */
-                uint32_t rxf0s = hfdcan1.Instance->RXF0S;
-                uint32_t ecr   = hfdcan1.Instance->ECR;
-                uint32_t psr   = hfdcan1.Instance->PSR;
-                uint32_t ir    = hfdcan1.Instance->IR;
-                uint32_t ie    = hfdcan1.Instance->IE;
-                Debug_Print("[FDCAN-DIAG] RXF0S=0x%02lX(FILL=%lu) TEC=%lu REC=%lu LEC=%lu IR=0x%08lX IE=0x%08lX\r\n",
-                            rxf0s, rxf0s & 0x7F,
-                            (ecr >> 16) & 0xFF, (ecr >> 8) & 0xFF, psr & 0x7,
-                            ir, ie);
-            }
-        }
-
-        /* --- PA11(RXD) 토글 감지: 매 반복마다 샘플링, LOW(dominant) 카운트 --- */
-        {
-            static uint32_t rx_low = 0;
-            static uint32_t rx_cnt = 0;
-            for (uint32_t i = 0; i < 60U; i++) {
-                if (((GPIOA->IDR >> 11) & 1U) == 0U) rx_low++;  /* PA11 LOW = dominant 감지 */
-            }
-            rx_cnt++;
-            if ((rx_cnt % 100U) == 0U) {  /* 1초마다 */
-                Debug_Print("[RX-SAMPLE] PA11 dominant(LOW) 감지=%lu/6000 (0=RXD 안 토글, 6000=stuck LOW)\r\n", rx_low);
-                rx_low = 0;
+            static uint32_t rec_check_tick = 0;
+            rec_check_tick++;
+            if ((rec_check_tick % 100U) == 0U) {  /* 1초마다 (100 * 10ms) */
+                static uint32_t ep_ticks = 0;
+                uint32_t ecr = hfdcan1.Instance->ECR;
+                uint32_t rec = (ecr >> 8) & 0xFFU;
+                if (rec > 127U) {
+                    ep_ticks++;
+                    if (ep_ticks >= 3U) {  /* 3초 지속 */
+                        Debug_Print("[FDCAN-RECOV] REC=%lu 3초 지속 → Stop/Start 리셋\r\n", (unsigned long)rec);
+                        HAL_FDCAN_Stop(&hfdcan1);
+                        HAL_FDCAN_Start(&hfdcan1);
+                        ep_ticks = 0;
+                    }
+                } else {
+                    ep_ticks = 0;
+                }
             }
         }
 
@@ -475,13 +443,6 @@ static void vMainTask(void *pvParameters)
             }
 
             Debug_Print("[FDCAN-FATAL] Bus-off recovery successful\r\n");
-        }
-
-        /* --- 주기적 TX 테스트 (CAN-FD 64바이트 프레임, 2초 주기) --- */
-        s_tx_test_cnt++;
-        if ((s_tx_test_cnt % 200U) == 0U) {  /* 200 * 10ms = 2초 */
-            tx_test_data[5] = (uint8_t)(s_tx_test_cnt & 0xFFU);  /* 롤링 카운터 */
-            HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx_test_hdr, tx_test_data);
         }
 
         /* --- 10ms 대기 (다른 태스크에 CPU 양보) --- */
@@ -550,7 +511,7 @@ static void vRS485Task(void *pvParameters)
                 uint8_t  dlc    = rx_msg.data[2];
 
                 if (dlc <= 64U && (3U + dlc) <= rx_msg.len) {
-                    /* RS485→CAN 포워딩 (CAN-FD: FDF=1, BRS=1) */
+                    /* RS485→CAN 포워딩 (Classic CAN — CANable 호환) */
                     FDCAN_TxHeaderTypeDef tx_header = {0};
                     tx_header.Identifier          = can_id;
                     tx_header.IdType              = FDCAN_STANDARD_ID;

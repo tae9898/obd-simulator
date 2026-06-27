@@ -1,7 +1,7 @@
 /**
  * @file    fdcan_config.c
  * @brief   FDCAN1 설정 구현
- * @note    Classic CAN 500kbps, TX/RX FIFO, ID 필터, 수신 인터럽트
+ * @note    CAN-FD 500kbps/2Mbps (BRS), TX/RX FIFO, ID 필터, 수신 인터럽트
  */
 
 #include "fdcan_config.h"
@@ -56,78 +56,14 @@ uint32_t FDCAN_BytesToDlc(uint8_t bytes)
 }
 
 /**
- * @brief  FDCAN1 주변기기 초기화
- * @param  hfdcan: FDCAN 핸들러 포인터
- * @retval HAL_OK = 성공
- *
- * @note   설정:
- *         - Classic CAN 모드 (CAN-FD 미사용)
- *         - 500kbps @ 8MHz FDCAN 클럭 (HSE)
- *         - Prescaler=1, TimeSegment1=13, TimeSegment2=2, SJW=1
- *         - 11-bit 표준 ID
- *         - TX FIFO: 큐 모드, 3개 엘리먼트
- *         - RX FIFO0: 5개 엘리먼트
- *         - 자동 재전송 비활성화
- */
-HAL_StatusTypeDef FDCAN1_Init(FDCAN_HandleTypeDef *hfdcan)
-{
-    HAL_StatusTypeDef status;
-
-    /* --- FDCAN 인스턴스 설정 --- */
-    hfdcan->Instance                 = FDCAN1;
-    hfdcan->Init.FrameFormat         = FDCAN_FRAME_CLASSIC;  /* Classic CAN */
-    hfdcan->Init.Mode                = FDCAN_MODE_NORMAL;    /* 노멀 모드 (ACK + 송신) */
-    hfdcan->Init.AutoRetransmission  = ENABLE;   /* 자동 재전송 활성화 */
-    hfdcan->Init.TransmitPause       = DISABLE;  /* 전송 일시정지 비활성화 */
-    hfdcan->Init.ProtocolException   = DISABLE;  /* 프로토콜 예외 비활성화 */
-
-    /* --- 비트 타이밍 설정 (Classic CAN 500kbps) --- */
-    /*
-     * FDCAN 클럭 = HSE 24MHz (Nucleo-G431RB MB1367 크리스탈)
-     * bitrate = fcan / (prescaler * (1 + TimeSegment1 + TimeSegment2))
-     * 24MHz / (3 * (1 + 13 + 2)) = 24MHz / 48 = 500kbps (SP 87.5%)
-     */
-    hfdcan->Init.NominalPrescaler    = FDCAN_PRESCALER;     /* 1 */
-    hfdcan->Init.NominalSyncJumpWidth = FDCAN_SJW;          /* 1 */
-    hfdcan->Init.NominalTimeSeg1     = FDCAN_TIME_SEG1;    /* 13 */
-    hfdcan->Init.NominalTimeSeg2     = FDCAN_TIME_SEG2;    /* 2 */
-
-    /* --- 데이터 비트 타이밍 (Classic CAN에서는 미사용, 초기화만) --- */
-    hfdcan->Init.DataPrescaler       = 1U;
-    hfdcan->Init.DataSyncJumpWidth   = 1U;
-    hfdcan->Init.DataTimeSeg1        = 1U;
-    hfdcan->Init.DataTimeSeg2        = 1U;
-
-    /* --- 필터 개수 설정 --- */
-    hfdcan->Init.StdFiltersNbr       = 1U;   /* 표준 필터 1개 */
-    hfdcan->Init.ExtFiltersNbr       = 0U;   /* 확장 필터 없음 */
-    hfdcan->Init.TxFifoQueueMode     = FDCAN_TX_FIFO_OPERATION;  /* FIFO 모드 */
-
-    /* --- HAL FDCAN 초기화 --- */
-    status = HAL_FDCAN_Init(hfdcan);
-    if (status != HAL_OK) {
-        Debug_Print("[FDCAN] HAL_FDCAN_Init failed: %d\r\n", status);
-        return status;
-    }
-
-    Debug_Print("[FDCAN] Init OK - Classic CAN 500kbps\r\n");
-    return HAL_OK;
-}
-
-/**
  * @brief  FDCAN1 CAN-FD 모드 초기화
  * @param  hfdcan: FDCAN 핸들러 포인터
  * @retval HAL_OK = 성공
  *
- * @note   Classic CAN과의 차이점:
- *         - FrameFormat: FDCAN_FRAME_FD_BRS (BRS 활성화)
- *         - DataPrescaler/DataTimeSeg1/DataTimeSeg2: 데이터 페이스 타이밍
+ * @note   CAN-FD with BRS:
+ *         - 아비트레이션(노미널) 페이스: 500kbps (FDCAN_PRESCALER/SEG1/SEG2)
+ *         - 데이터 페이스: 2Mbps (FDCAN_DATA_* 매크로)
  *         - 송신 시 FDCAN_BRS_ON, FDCAN_FD_CAN 플래그 사용
- *
- *         Classic CAN init과 비교해 변경된 것은 딱 3줄:
- *         1. FrameFormat → FDCAN_FRAME_FD_BRS
- *         2. DataPrescaler/DataTimeSeg1/DataTimeSeg2 → 실제 값 설정
- *         나머지(NominalPrescaler, 필터, FIFO 등)는 동일
  */
 HAL_StatusTypeDef FDCAN1_InitFD(FDCAN_HandleTypeDef *hfdcan)
 {
@@ -153,7 +89,7 @@ HAL_StatusTypeDef FDCAN1_InitFD(FDCAN_HandleTypeDef *hfdcan)
     hfdcan->Init.DataTimeSeg1        = FDCAN_DATA_TIME_SEG1;  /* 2 */
     hfdcan->Init.DataTimeSeg2        = FDCAN_DATA_TIME_SEG2;  /* 1 */
 
-    /* --- 필터 및 FIFO 설정 (Classic CAN과 동일) --- */
+    /* --- 필터 및 FIFO 설정 --- */
     hfdcan->Init.StdFiltersNbr       = 1U;
     hfdcan->Init.ExtFiltersNbr       = 0U;
     hfdcan->Init.TxFifoQueueMode     = FDCAN_TX_FIFO_OPERATION;

@@ -2,7 +2,7 @@
 
 > Source: Microchip DS20005284A (MCP2561/2FD High-Speed CAN FD Transceiver)
 > Table 1-2 PIN DESCRIPTIONS — MCP2562FD PDIP/SOIC
-> Verified: 2026-06-16
+> Verified: 2026-06-27
 
 ## ⚠️ MCP2562FD ≠ MCP2561FD pin assignment
 
@@ -26,10 +26,10 @@ Identify the exact part by the marking on the package (`MCP2562FD` vs `MCP2561FD
 
 | Pin | Name | Function | STM32G431RB connection |
 |-----|------|----------|------------------------|
-| 1 | TXD | Transmit Data Input (MCU→chip) | **PB9** (FDCAN1_TX) — PA12 is a USB pin, so PB9 is used |
+| 1 | TXD | Transmit Data Input (MCU→chip) | **PA12** (FDCAN1_TX, CN10-12) |
 | 2 | VSS | Ground | **GND** |
 | 3 | VDD | Main supply (transceiver/receiver power) | **5V** (4.5–5.5V) |
-| 4 | RXD | Receive Data Output (chip→MCU) | **PA11** (FDCAN1_RX) |
+| 4 | RXD | Receive Data Output (chip→MCU) | **PA11** (FDCAN1_RX, CN10-14) |
 | 5 | VIO | Digital I/O supply (sets RXD/TXD/STBY logic level) | **3.3V** (matches MCU logic) |
 | 6 | CANL | CAN Low bus | bus CANL |
 | 7 | CANH | CAN High bus | bus CANH |
@@ -38,7 +38,7 @@ Identify the exact part by the marking on the package (`MCP2562FD` vs `MCP2561FD
 ## STM32 ↔ MCP2562FD wiring summary
 
 ```
-STM32 PB9  (FDCAN1_TX) ── pin 1 (TXD)   ← use PB9 (PA12 is USB)
+STM32 PA12 (FDCAN1_TX) ── pin 1 (TXD)
 STM32 PA11 (FDCAN1_RX) ── pin 4 (RXD)
 STM32 3.3V            ── pin 5 (VIO)    ← MCU logic voltage
 Nucleo 5V             ── pin 3 (VDD)    ← transceiver main supply
@@ -69,7 +69,7 @@ bus                   ── pin 6 (CANL), pin 7 (CANH)
 
 > 출처: Microchip DS20005284A (MCP2561/2FD High-Speed CAN FD Transceiver)
 > Table 1-2 PIN DESCRIPTIONS — MCP2562FD PDIP/SOIC 기준
-> 최종 확인: 2026-06-16
+> 최종 확인: 2026-06-27
 
 ## ⚠️ 주의: MCP2562FD ≠ MCP2561FD 핀배치
 
@@ -93,10 +93,10 @@ MCP2562FD와 MCP2561FD는 같은 8핀 패키지이지만 **pin 5가 다름**:
 
 | 핀 | 이름 | 기능 | STM32G431RB 연결 |
 |----|------|------|------------------|
-| 1 | TXD | Transmit Data Input (MCU→칩) | **PB9** (FDCAN1_TX) — PA12는 USB 핀이므로 PB9 사용 |
+| 1 | TXD | Transmit Data Input (MCU→칩) | **PA12** (FDCAN1_TX, CN10-12) |
 | 2 | VSS | Ground | **GND** |
 | 3 | VDD | 주 전원 (트랜시버/수신기 전원) | **5V** (4.5~5.5V) |
-| 4 | RXD | Receive Data Output (칩→MCU) | **PA11** (FDCAN1_RX) |
+| 4 | RXD | Receive Data Output (칩→MCU) | **PA11** (FDCAN1_RX, CN10-14) |
 | 5 | VIO | 디지털 I/O 전원 (RXD/TXD/STBY 레벨 결정) | **3.3V** (MCU 로직과 일치) |
 | 6 | CANL | CAN Low 버스 | 버스 CANL |
 | 7 | CANH | CAN High 버스 | 버스 CANH |
@@ -105,7 +105,7 @@ MCP2562FD와 MCP2561FD는 같은 8핀 패키지이지만 **pin 5가 다름**:
 ## STM32 ↔ MCP2562FD 배선 요약
 
 ```
-STM32 PB9  (FDCAN1_TX) ── pin 1 (TXD)   ← PA12는 USB 핀이므로 PB9 사용
+STM32 PA12 (FDCAN1_TX) ── pin 1 (TXD)
 STM32 PA11 (FDCAN1_RX) ── pin 4 (RXD)
 STM32 3.3V            ── pin 5 (VIO)    ← MCU 로직 전압
 Nucleo 5V             ── pin 3 (VDD)    ← 트랜시버 주 전원

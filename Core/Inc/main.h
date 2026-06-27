@@ -36,12 +36,12 @@ extern QueueHandle_t xCanRxQueue;
 extern SemaphoreHandle_t xUartMutex;
 
 /* === 핀 정의 === */
-/** FDCAN1 RX - MCP2562FD RXD (PB8) — PA11 손상으로 이관 */
+/** FDCAN1 RX - MCP2562FD RXD (PA11) — PA 통일 */
 #define FDCAN1_RX_PIN         GPIO_PIN_11
 #define FDCAN1_RX_PORT        GPIOA
 #define FDCAN1_RX_AF          GPIO_AF9_FDCAN1
 
-/** FDCAN1 TX - MCP2562FD TXD (PA12) */
+/** FDCAN1 TX - MCP2562FD TXD (PA12) — PA 통일 (PA11+PA12) */
 #define FDCAN1_TX_PIN         GPIO_PIN_12
 #define FDCAN1_TX_PORT        GPIOA
 #define FDCAN1_TX_AF          GPIO_AF9_FDCAN1
@@ -105,8 +105,8 @@ extern SemaphoreHandle_t xUartMutex;
  * CAN-FD 데이터 페이스 2Mbps:
  *   bitrate = fcan / (prescaler * (1 + TimeSegment1 + TimeSegment2))
  *   FDCAN 클럭 = HSE 24MHz (FDCAN_CLK_FREQ 참조)
- *   24MHz / (1 * (1 + 10 + 1)) = 24MHz / 12 = 2Mbps
- *   샘플 포인트 = (1 + 10) / 12 = 91.7%
+ *   24MHz / (1 * (1 + 8 + 3)) = 24MHz / 12 = 2Mbps
+ *   샘플 포인트 = (1 + 8) / 12 = 75%
  *
  * !! 과거 주석은 "8MHz / (1*(1+2+1)) = 2Mbps" 였으나, FDCAN 클럭이
  *    HSE 24MHz 로 확정됨에 따라 실제로는 6Mbps 로 잡히는 오류였음.
@@ -117,8 +117,8 @@ extern SemaphoreHandle_t xUartMutex;
  *   - 데이터 페이스: 2Mbps (실제 데이터 전송, BRS 활성화 시에만)
  */
 #define FDCAN_DATA_PRESCALER  1U
-#define FDCAN_DATA_TIME_SEG1  10U
-#define FDCAN_DATA_TIME_SEG2  1U
+#define FDCAN_DATA_TIME_SEG1  8U
+#define FDCAN_DATA_TIME_SEG2  3U
 #define FDCAN_DATA_SJW        1U
 
 /* === OBD-II CAN ID 정의 === */
