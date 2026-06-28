@@ -1,136 +1,115 @@
-# Phase 0: OBD-II ECU 시뮬레이터
+# STM32 OBD/UDS ECU Simulator + FreeRTOS Gateway
 
-STM32G431RB Nucleo 보드 기반 OBD-II ECU 시뮬레이터 펌웨어. Classic CAN 500kbps로 PC에서 OBD-II 요청 시 시뮬레이션된 차량 데이터로 응답한다.
+STM32G431RB firmware for the SDV diagnostic gateway project. Acts as the
+**ECU node**: responds to OBD-II / UDS diagnostics over CAN-FD, and bridges
+CAN ↔ RS485 internally under FreeRTOS.
 
-## 프로젝트 구조
+> Phases 0–2 of the project. Tested end-to-end against the RPi3 gateway
+> (see the top-level project README).
+
+## What it does
+
+- **OBD-II simulator** (SAE J1979): Mode 01 PIDs — RPM (0x0C), speed (0x0D),
+  coolant temp (0x05), supported-PID bitmap (0x00) — with simulated values.
+- **UDS server** (ISO 14229): DiagnosticSessionControl (0x10), ECUReset (0x11),
+  ReadDataByIdentifier (0x22), SecurityAccess (0x27), RoutineControl (0x31),
+  with NRC handling.
+- **ISO-TP** (ISO 15765-2): single/multi-frame assembly, flow control.
+- **CAN-FD** (BRS): 500 kbps arbitration / 2 Mbps data.
+- **FreeRTOS gateway**: separate tasks for CAN-Rx, RS485, debug UART;
+  CAN↔RS485 bidirectional message routing; queues + mutex.
+- **Safety**: IWDG watchdog, error handler (CAN bus-off, UART framing → safe state).
+
+## Project structure
 
 ```
-phase0-obd-simulator/
+obd-simulator/
 ├── Core/
-│   ├── Inc/                    # 헤더 파일
-│   │   ├── main.h              # 핀 정의, 클럭 상수
-│   │   ├── obd2_simulator.h    # OBD-II PID 정의, 시뮬레이션 상태 구조체
-│   │   ├── fdcan_config.h      # FDCAN 초기화 프로토타입
-│   │   ├── uart_debug.h        # 디버그 UART 프로토타입
-│   │   └── stm32g4xx_hal_conf.h # HAL 모듈 활성화 설정
-│   └── Src/                    # 소스 파일
-│       ├── main.c              # 메인 루프, 클럭 설정, GPIO 초기화
-│       ├── obd2_simulator.c    # OBD-II 요청 파싱, PID 응답 생성
-│       ├── fdcan_config.c      # FDCAN1 Classic CAN 500kbps, 필터, 인터럽트
-│       ├── uart_debug.c        # USART2 printf retarget
-│       ├── stm32g4xx_hal_msp.c # HAL MSP (클럭, GPIO AF, NVIC)
-│       ├── stm32g4xx_it.c      # 인터럽트 핸들러
-│       └── system_stm32g4xx.c  # SystemInit, SystemCoreClockUpdate
-├── docs/
-│   └── CUBE_SETUP.md           # STM32CubeMX 설정 가이드
-├── tests/
-│   ├── socketcan_test.sh       # Bash CAN 테스트 (can-utils)
-│   └── obd2_test.py            # Python CAN 테스트 (python-can)
-├── Drivers/                    # HAL 드라이버 (별도 clone 필요)
-├── Makefile                    # arm-none-eabi-gcc 빌드
-├── STM32G431RBTX_FLASH.ld      # 링커 스크립트 (128KB Flash, 32KB RAM)
-└── startup_stm32g431xx.s       # Cortex-M4 startup 어셈블리
+│   ├── Inc/   main.h, obd2_simulator.h, fdcan_config.h, diag_session.h,
+│   │          uds_service.h, iso_tp.h, rs485.h, uart_debug.h, ...
+│   └── Src/   main.c (FreeRTOS tasks), fdcan_config.c, obd2_simulator.c,
+│              iso_tp.c, diag_session.c, uds_service.c, rs485.c, uart_debug.c
+├── Middlewares/FreeRTOS/
+├── docs/                      # per-phase guides (CAN-FD, ISO-TP, UDS, RTOS, routing, IWDG, MISRA)
+├── tests/                     # Python (UDS/ISO-TP/OBD-II) + SocketCAN tests
+├── Makefile                   # arm-none-eabi-gcc
+├── STM32G431RBTX_FLASH.ld     # 128KB Flash / 32KB RAM linker script
+└── startup_stm32g431xx.s
 ```
 
-## 하드웨어 요구사항
+## Hardware
 
-| 부품 | 용도 |
-|------|------|
-| STM32 Nucleo-G431RB | 메인 MCU 보드 |
-| MCP2562FD | CAN-FD 트랜시버 |
-| 120Ω 저항 x2 | CAN 버스 종단 |
-| USB-CAN 어댑터 | PC↔CAN 연결 (테스트용) |
+| Part | Use |
+|------|-----|
+| STM32 Nucleo-G431RB | ECU (Cortex-M4 @ 170 MHz, 128 KB Flash, 32 KB RAM) |
+| MCP2562FD | CAN-FD transceiver (PA11 RX, PA12 TX) |
+| MAX485 | RS485 transceiver (PA9 TX, PA10 RX, PA8 DE/RE) |
+| 120 Ω × 2 | CAN / RS485 termination |
 
-### 핀 할당
+| Pin | Function |
+|-----|----------|
+| PA11 / PA12 | FDCAN1_RX / TX |
+| PA9 / PA10 | USART1 TX/RX (RS485) |
+| PA8 | MAX485 DE/RE direction |
+| PA2 / PA3 | USART2 TX/RX — ST-LINK debug VCP |
+| PA5 | LD4 LED |
 
-| 핀 | 기능 | 연결 |
-|----|------|------|
-| PA11 | FDCAN1_RX | MCP2562FD RXD |
-| PA12 | FDCAN1_TX | MCP2562FD TXD |
-| PA2 | USART2_TX | ST-LINK VCP (디버그) |
-| PA3 | USART2_RX | ST-LINK VCP (디버그) |
-| PA5 | GPIO_Output | LD4 LED |
-
-## 빌드 방법
-
-### 1. HAL 드라이버 확보
+## Build & flash
 
 ```bash
-# HAL 드라이버
-git clone --depth 1 https://github.com/STMicroelectronics/stm32g4xx_hal_driver.git Drivers/STM32G4xx_HAL_Driver
+# toolchain
+sudo apt install gcc-arm-none-eabi stlink-tools   # (or rpm-ostree / distrobox equivalent)
 
-# CMSIS 디바이스 헤더
+# HAL drivers (first time)
+git clone --depth 1 https://github.com/STMicroelectronics/stm32g4xx_hal_driver.git Drivers/STM32G4xx_HAL_Driver
 mkdir -p Drivers/CMSIS/Device/ST
 git clone --depth 1 https://github.com/STMicroelectronics/cmsis_device_g4.git Drivers/CMSIS/Device/ST/STM32G4xx
-```
 
-### 2. 툴체인 설치
-
-```bash
-sudo apt install gcc-arm-none-eabi stlink-tools
-```
-
-### 3. 빌드
-
-```bash
+# build & flash
 make -j$(nproc)
-```
+make flash                 # via ST-LINK
 
-### 4. 플래시
-
-```bash
-make flash
-```
-
-### 5. 디버그 출력 확인
-
-```bash
-# 시리얼 포트 연결 (115200 baud)
+# debug console (115200 8N1, ST-LINK VCP)
 screen /dev/ttyACM0 115200
-
-# 또는 소프트웨어 리셋 후 cat으로 확인
-st-flash reset && cat /dev/ttyACM0
 ```
 
-## 지원 OBD-II PID
+## CAN interface
 
-| PID | 데이터 | 시뮬레이션 |
-|-----|--------|-----------|
-| 0x00 | 지원 PID 목록 | 비트맵 응답 |
-| 0x05 | 냉각수 온도 | 80~105°C 서서히 변화 |
-| 0x0C | 엔진 RPM | 800~4000 RPM 램프 |
-| 0x0D | 차속 | 0~120 km/h 서서히 변화 |
+- **Mode**: CAN-FD with BRS — arbitration 500 kbps, data 2 Mbps
+- **Request ID**: 0x7E0 · **Response ID**: 0x7E8 (OBD-II/UDS diagnostic)
+- **Filter**: accepts standard frames 0x000–0x7FF on RX FIFO0
+- Firmware is passive: waits for requests, sends responses (no periodic TX).
 
-## SocketCAN 테스트
+## RS485
 
+- USART1 @ 115200 8N1, half-duplex (DE/RE on PA8)
+- Frame format: `[ID_H][ID_L][DLC][DATA 0..N]`
+- Bidirectional CAN↔RS485 routing in the FreeRTOS gateway task
+
+## Test (against RPi3 gateway)
+
+With the STM32 connected to the RPi3 gateway over CAN-FD, the PC tester
+queries it through DoIP (see top-level README `tester/doip_tester.py`):
 ```bash
-# CAN 인터페이스 설정
-sudo ip link set can0 type can bitrate 500000
-sudo ip link set can0 up
-
-# 차속 요청
-cansend can0 7E0#02010D0000000000
-
-# 응답 확인
-candump can0,7E8:7FF -t a -n 1
-
-# Python 테스트
-python3 tests/obd2_test.py can0
+python3 tester/doip_tester.py <RPi_IP> 0x0C    # → RPM value (round-trip via DoIP↔CAN)
 ```
 
-## 빌드 결과
-
+Direct SocketCAN test (CAN bus only):
+```bash
+sudo ip link set can0 type can bitrate 500000 dbitrate 2000000 fd on && sudo ip link set can0 up
+cansend can0 7E0#02010C0000000000              # RPM request
+candump can0                                    # → 7E8 response
 ```
-   text    data     bss     dec     hex
-  23528     112    2720   26360    66f8  build/phase0-obd-simulator.elf
-```
 
-- Flash 사용: 23.5KB / 128KB (18%)
-- RAM 사용: 2.8KB / 32KB (9%)
+## Build size (final, Phase 2)
 
-## 개발 환경
+| Resource | Used | Limit | % |
+|----------|------|-------|---|
+| Flash | ~46.8 KB | 128 KB | 37% |
+| RAM | ~12.5 KB | 32 KB | 39% |
 
-- **방식:** Bare-metal (CubeMX 없이 HAL 직접 작성)
-- **툴체인:** arm-none-eabi-gcc 13.2.1
-- **MCU:** STM32G431RB (Cortex-M4 @ 170MHz, 128KB Flash, 32KB RAM)
-- **프로토콜:** Classic CAN 500kbps, OBD-II (SAE J1979)
+## Development notes
+
+- Bare-metal HAL (no CubeMX code generation); FreeRTOS added by hand.
+- Toolchain: arm-none-eabi-gcc 13.x.
+- Static analysis: cppcheck MISRA-C:2012 spot checks (e.g., Rule 10.4 explicit casts).
