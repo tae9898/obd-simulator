@@ -13,6 +13,14 @@ extern "C" {
 
 #include "main.h"
 
+/* === per-frame verbose 디버그 (1=켬, 0=끔) ===
+ * 매 CAN/ISO-TP 프레임 UART 출력이 블로킹(115200baud 라인당 ~4ms)이라
+ * 응답 latency 병목. production/latency 측정 시 0. 초기화·에러 로그는 별개.
+ */
+#ifndef DEBUG_VERBOSE
+#define DEBUG_VERBOSE 1
+#endif
+
 /* === UART 초기화 함수 === */
 
 /**

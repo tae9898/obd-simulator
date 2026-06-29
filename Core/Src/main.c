@@ -31,6 +31,12 @@
  */
 #define RUN_FDCAN_LOOPBACK_TEST 0
 
+/* === per-frame verbose 디버그 (uart_debug.h 의 DEBUG_VERBOSE 참조) ===
+ * 매 CAN/ISO-TP 프레임마다 UART 디버그 출력(HAL_UART_Transmit 블로킹, 115200baud
+ * 에서 라인당 ~4ms)이 응답 latency의 주된 병목. production/latency 측정 시 0.
+ * 초기화·에러·타임아웃 로그는 DEBUG_VERBOSE 와 무관하게 항상 출력.
+ */
+
 #if RUN_FDCAN_LOOPBACK_TEST
 #include "fdcan_loopback_test.h"
 #endif
@@ -474,9 +480,11 @@ static void vCanRxTask(void *pvParameters)
         /* Queue에서 메시지 대기 (100ms 타임아웃, IWDG 리프레시 위해) */
         if (xQueueReceive(xCanRxQueue, &rx_msg, pdMS_TO_TICKS(100)) == pdTRUE) {
             /* 수신된 CAN 프레임 즉시 출력 (최대 64바이트까지, 디버그) */
+#if DEBUG_VERBOSE
             Debug_LogCAN_Rx(rx_msg.can_id, rx_msg.data, rx_msg.dlc);
+#endif
 
-            /* ISO-TP → UDS 처리 */
+            /* ISO-TP → UDS 처리 (응답 송신) */
             ISO_TP_ProcessFrame(rx_msg.can_id, rx_msg.data, rx_msg.dlc);
 
             /* CAN→RS485 포워딩 (RPi4로 전달) */

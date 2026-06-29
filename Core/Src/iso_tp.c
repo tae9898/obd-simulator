@@ -176,7 +176,9 @@ static void process_single_frame(uint32_t can_id, const uint8_t *data, uint8_t d
     s_ctx.rx_can_id = can_id;
     s_ctx.state = ISO_TP_COMPLETE;
 
+#if DEBUG_VERBOSE
     Debug_Print("[ISO-TP] SF len=%u\r\n", payload_len);
+#endif
     dispatch_completed_message();
 }
 

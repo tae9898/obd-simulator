@@ -7,6 +7,8 @@
 #include "main.h"
 #include "rs485.h"
 
+extern DMA_HandleTypeDef hdma_usart2_tx;
+
 /**
  * @brief  FDCAN1 MSP 초기화 (HAL_FDCAN_Init에서 자동 호출)
  * @param  hfdcan: FDCAN 핸들러 포인터
@@ -103,6 +105,25 @@ void HAL_UART_MspInit(UART_HandleTypeDef *huart)
         GPIO_InitStruct.Speed     = GPIO_SPEED_FREQ_VERY_HIGH;
         GPIO_InitStruct.Alternate = USART2_RX_AF;  /* AF7 */
         HAL_GPIO_Init(USART2_RX_PORT, &GPIO_InitStruct);
+
+        /* --- USART2 TX DMA 설정 (비블로킹 디버그 출력) --- */
+        __HAL_RCC_DMA1_CLK_ENABLE();
+
+        hdma_usart2_tx.Instance = DMA1_Channel6;
+        hdma_usart2_tx.Init.Request = DMA_REQUEST_USART2_TX;
+        hdma_usart2_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;
+        hdma_usart2_tx.Init.PeriphInc = DMA_PINC_DISABLE;
+        hdma_usart2_tx.Init.MemInc = DMA_MINC_ENABLE;
+        hdma_usart2_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+        hdma_usart2_tx.Init.MemDataAlignment = DMA_MDATAALIGN_BYTE;
+        hdma_usart2_tx.Init.Mode = DMA_NORMAL;
+        hdma_usart2_tx.Init.Priority = DMA_PRIORITY_LOW;
+        (void)HAL_DMA_Init(&hdma_usart2_tx);
+
+        __HAL_LINKDMA(huart, hdmatx, hdma_usart2_tx);
+
+        HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 7, 0);
+        HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
     }
     else if (huart->Instance == USART1) {
         /* --- USART1 클럭 활성화 --- */

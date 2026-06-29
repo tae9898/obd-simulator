@@ -6,8 +6,37 @@
  */
 
 #include "uart_debug.h"
+#include "stm32g4xx_hal_dma.h"
 #include <stdarg.h>
 #include <stdio.h>
+
+/* === DMA non-blocking UART log === */
+DMA_HandleTypeDef hdma_usart2_tx;
+
+#define LOG_RING_SIZE 2048
+static uint8_t    s_log_ring[LOG_RING_SIZE];
+static volatile uint16_t s_log_head = 0;
+static volatile uint16_t s_log_tail = 0;
+static volatile uint8_t  s_dma_busy = 0;
+static uint16_t s_dma_chunk_len = 0;
+
+static void log_dma_try_start(void)
+{
+    if (s_dma_busy) return;
+    if (s_log_head == s_log_tail) return;
+
+    uint16_t chunk;
+    if (s_log_head > s_log_tail) {
+        chunk = s_log_head - s_log_tail;
+    } else {
+        chunk = LOG_RING_SIZE - s_log_tail;
+    }
+    s_dma_chunk_len = chunk;
+    s_dma_busy = 1;
+    if (HAL_UART_Transmit_DMA(&huart2, &s_log_ring[s_log_tail], chunk) != HAL_OK) {
+        s_dma_busy = 0;  /* 실패 시 재시도 허용 (stuck 방지) */
+    }
+}
 
 /**
  * @brief  USART2 디버그 포트 초기화
@@ -79,26 +108,28 @@ void Debug_Print(const char *fmt, ...)
     va_list args;
 
     va_start(args, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, args);
+    int len = vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
 
-    /* 문자열 길이 계산 */
-    uint16_t len = 0;
-    while (buf[len] != '\0' && len < sizeof(buf)) {
-        len++;
-    }
+    if (len < 0) return;
+    if (len >= (int)sizeof(buf)) len = (int)sizeof(buf) - 1;
 
-    /* Mutex로 UART 보호 (스케줄러 시작 전에는 xUartMutex == NULL) */
     if (xUartMutex != NULL) {
         xSemaphoreTake(xUartMutex, portMAX_DELAY);
     }
 
-    /* USART2로 전송 */
-    HAL_UART_Transmit(&huart2, (uint8_t *)buf, len, HAL_MAX_DELAY);
+    for (int i = 0; i < len; i++) {
+        uint16_t next = (uint16_t)((s_log_head + 1U) % LOG_RING_SIZE);
+        if (next == s_log_tail) break;
+        s_log_ring[s_log_head] = (uint8_t)buf[i];
+        s_log_head = next;
+    }
 
     if (xUartMutex != NULL) {
         xSemaphoreGive(xUartMutex);
     }
+
+    log_dma_try_start();
 }
 
 /**
@@ -141,4 +172,17 @@ void Debug_LogCAN_Tx(uint32_t id, const uint8_t *data, uint32_t len)
     snprintf(buf + pos, sizeof(buf) - (size_t)pos, "\r\n");
 
     Debug_Print("%s", buf);
+}
+
+/**
+ * @brief  DMA TX 완료 콜백 (ISR 컨텍스트)
+ * @note   ring buffer tail 업데이트 후 다음 청크 전송
+ */
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART2) {
+        s_log_tail = (uint16_t)((s_log_tail + s_dma_chunk_len) % LOG_RING_SIZE);
+        s_dma_busy = 0;
+        log_dma_try_start();
+    }
 }

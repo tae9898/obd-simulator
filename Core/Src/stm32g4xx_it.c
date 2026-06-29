@@ -69,3 +69,13 @@ void FDCAN1_IT1_IRQHandler(void)
 {
     HAL_FDCAN_IRQHandler(&hfdcan1);
 }
+
+/**
+ * @brief  DMA1 Channel6 인터럽트 핸들러 (USART2 TX DMA)
+ * @note   디버그 UART 비블로킹 출력용. HAL_UART_TxCpltCallback 호출됨.
+ */
+void DMA1_Channel6_IRQHandler(void)
+{
+    extern DMA_HandleTypeDef hdma_usart2_tx;
+    HAL_DMA_IRQHandler(&hdma_usart2_tx);
+}
