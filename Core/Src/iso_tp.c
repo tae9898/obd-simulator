@@ -8,11 +8,12 @@
  *   수신: FDCAN ISR → ISO_TP_ProcessFrame() → 조립 완료 → UDS_DispatchRequest()
  *   송신: UDS → ISO_TP_SendResponse() → SF 또는 FF+CF로 분할 → FDCAN TX
  *
- * 상태머신:
- *   IDLE → (SF수신) → COMPLETE → UDS처리 → IDLE
- *   IDLE → (FF수신) → WAIT_CF → (CF수신 반복) → COMPLETE → UDS처리 → IDLE
- *   IDLE → (SF송신) → IDLE
- *   IDLE → (FF송신) → TX_WAIT_FC → (FC수신) → TX_SEND_CF → IDLE
+ * 상태머신 (수신/송신 독립 — ISO 15765-2:2016 §9.8.3 full-duplex):
+ *   rx: RX_IDLE → (SF수신) → RX_COMPLETE → UDS처리 → RX_IDLE
+ *   rx: RX_IDLE → (FF수신) → RX_WAIT_CF → (CF수신 반복) → RX_COMPLETE → ... → RX_IDLE
+ *   tx: TX_IDLE → (SF송신) → TX_IDLE
+ *   tx: TX_IDLE → (FF송신) → TX_WAIT_FC → (FC수신) → TX_SEND_CF → TX_IDLE
+ *   rx_state 와 tx_state 는 독립이므로 세그먼트 송·수신이 동시에 진행될 수 있다.
  */
 
 #include "iso_tp.h"
@@ -39,6 +40,7 @@ static void send_first_frame(uint32_t can_id, const uint8_t *data, uint32_t tota
 static void send_consecutive_frames(void);
 static void send_flow_control(uint32_t can_id, uint8_t fs, uint8_t bs, uint8_t stmin);
 static void dispatch_completed_message(void);
+static void abort_stream_rx(void);
 
 /* === 외부 FDCAN 핸들러 (main.c에 정의) === */
 extern FDCAN_HandleTypeDef hfdcan1;
@@ -50,7 +52,8 @@ extern FDCAN_HandleTypeDef hfdcan1;
 void ISO_TP_Init(void)
 {
     (void)memset(&s_ctx, 0, sizeof(s_ctx));
-    s_ctx.state = ISO_TP_IDLE;
+    s_ctx.rx_state = ISO_TP_RX_IDLE;
+    s_ctx.tx_state = ISO_TP_TX_IDLE;
     Debug_Print("[ISO-TP] Init OK\r\n");
 }
 
@@ -104,40 +107,39 @@ void ISO_TP_SendResponse(uint32_t can_id, const uint8_t *data, uint16_t len)
     if (len <= ISO_TP_SF_MAX_PAYLOAD) {
         send_single_frame(can_id, data, len);
     } else {
-        /* 멀티프레임 송신: FF 보내고 FC 대기 */
+        /* 멀티프레임 송신: FF 보내고 FC 대기.
+         * 진행 중인 세그먼트 송신이 있으면 거부(단일 송신 채널은 한 번에 하나). */
+        if (s_ctx.tx_state != ISO_TP_TX_IDLE) {
+            Debug_Print("[ISO-TP] TX busy, new response rejected\r\n");
+            return;
+        }
+
         (void)memcpy(s_ctx.tx_buffer, data, len);
         s_ctx.tx_total_size = (uint32_t)len;
         s_ctx.tx_sent = 0U;
         s_ctx.tx_seq = 1U;
         s_ctx.tx_can_id = can_id;
-        s_ctx.state = ISO_TP_TX_WAIT_FC;
+        s_ctx.tx_state = ISO_TP_TX_WAIT_FC;
         send_first_frame(can_id, data, (uint32_t)len);
     }
 }
 
 void ISO_TP_Tick(uint32_t now_ms)
 {
-    if (s_ctx.state == ISO_TP_IDLE) {
-        return;
-    }
-
-    /* CF 수신 타임아웃 */
-    if (s_ctx.state == ISO_TP_WAIT_CF) {
-        if ((now_ms - s_ctx.last_activity_tick) >= ISO_TP_RX_TIMEOUT_MS) {
+    /* CF 수신 타임아웃 (RX 상태만 검사 — 송신과 독립) */
+    if (s_ctx.rx_state == ISO_TP_RX_WAIT_CF) {
+        if ((now_ms - s_ctx.last_rx_tick) >= ISO_TP_RX_TIMEOUT_MS) {
             Debug_Print("[ISO-TP] RX timeout\r\n");
-            if ((s_ctx.stream_mode != 0U) && (s_stream_sink != NULL)) {
-                s_stream_sink(ISO_TP_STREAM_ERROR, NULL, 0U, s_ctx.rx_total_size);
-            }
-            s_ctx.stream_mode = 0U;
-            s_ctx.state = ISO_TP_IDLE;
+            abort_stream_rx();
+            s_ctx.rx_state = ISO_TP_RX_IDLE;
         }
     }
 
-    /* FC 수신 타임아웃 */
-    if (s_ctx.state == ISO_TP_TX_WAIT_FC) {
-        if ((now_ms - s_ctx.last_activity_tick) >= ISO_TP_TX_FC_TIMEOUT_MS) {
+    /* FC 수신 타임아웃 (TX 상태만 검사 — 수신과 독립) */
+    if (s_ctx.tx_state == ISO_TP_TX_WAIT_FC) {
+        if ((now_ms - s_ctx.last_tx_tick) >= ISO_TP_TX_FC_TIMEOUT_MS) {
             Debug_Print("[ISO-TP] TX FC timeout\r\n");
-            s_ctx.state = ISO_TP_IDLE;
+            s_ctx.tx_state = ISO_TP_TX_IDLE;
         }
     }
 }
@@ -155,6 +157,14 @@ void ISO_TP_Tick(uint32_t now_ms)
 static void process_single_frame(uint32_t can_id, const uint8_t *data, uint8_t dlc)
 {
     uint8_t payload_len;
+
+    /* §9.8.3 Table 23 (full-duplex): 송신 중에도 수신은 독립 동작. 단, 세그먼트
+     * 수신이 진행 중이면 현재 수신을 종료(스트림이면 ERROR 통지)하고 이 SF 를
+     * 새 수신의 시작으로 처리한다. */
+    if (s_ctx.rx_state == ISO_TP_RX_WAIT_CF) {
+        abort_stream_rx();
+        Debug_Print("[ISO-TP] SF restarts in-progress reception\r\n");
+    }
 
     if (dlc > 1U && (data[0] & 0x0FU) == 0U) {
         /* CAN-FD 확장 SF: byte0=0x00, byte1=길이 */
@@ -174,7 +184,7 @@ static void process_single_frame(uint32_t can_id, const uint8_t *data, uint8_t d
 
     s_ctx.rx_total_size = payload_len;
     s_ctx.rx_can_id = can_id;
-    s_ctx.state = ISO_TP_COMPLETE;
+    s_ctx.rx_state = ISO_TP_RX_COMPLETE;
 
 #if DEBUG_VERBOSE
     Debug_Print("[ISO-TP] SF len=%u\r\n", payload_len);
@@ -190,6 +200,13 @@ static void process_single_frame(uint32_t can_id, const uint8_t *data, uint8_t d
  */
 static void process_first_frame(uint32_t can_id, const uint8_t *data, uint8_t dlc)
 {
+    /* §9.8.3 Table 23 (full-duplex): 송신 중에도 수신은 독립 동작. 세그먼트 수신이
+     * 진행 중이면 현재 수신을 종료(스트림이면 ERROR 통지)하고 이 FF 로 재시작. */
+    if (s_ctx.rx_state == ISO_TP_RX_WAIT_CF) {
+        abort_stream_rx();
+        Debug_Print("[ISO-TP] FF restarts in-progress reception\r\n");
+    }
+
     /* 길이 디코딩: classic(12-bit) 또는 escape(32-bit).
      * escape 감지: data[0]=0x10 & data[1]=0x00. 정상 FF에선 길이 0(무효)이라
      * 이 값을 escape 마커로 재사용 (ISO 15765-2:2016). */
@@ -205,7 +222,7 @@ static void process_first_frame(uint32_t can_id, const uint8_t *data, uint8_t dl
         /* escape FF (>4095): bytes[2..5] = 32-bit 길이 (big-endian) */
         if (dlc < 6U) {
             Debug_Print("[ISO-TP] escape FF too short (dlc=%u)\r\n", dlc);
-            s_ctx.state = ISO_TP_IDLE;
+            s_ctx.rx_state = ISO_TP_RX_IDLE;
             return;
         }
         total_size = (((uint32_t)data[2]) << 24U)
@@ -233,7 +250,7 @@ static void process_first_frame(uint32_t can_id, const uint8_t *data, uint8_t dl
             Debug_Print("[ISO-TP] FF too large: %lu, no sink -> OVERFLOW\r\n",
                         (unsigned long)total_size);
             send_flow_control(can_id, ISO_TP_FC_OVERFLOW, 0U, 0U);
-            s_ctx.state = ISO_TP_IDLE;
+            s_ctx.rx_state = ISO_TP_RX_IDLE;
             return;
         }
         /* 스트림 모드 진입: rx_buffer 미사용, CF 청크를 싱크로 직접 전달 */
@@ -242,8 +259,8 @@ static void process_first_frame(uint32_t can_id, const uint8_t *data, uint8_t dl
         s_ctx.rx_expected_seq   = 1U;
         s_ctx.rx_can_id         = can_id;
         s_ctx.stream_mode       = 1U;
-        s_ctx.last_activity_tick = HAL_GetTick();
-        s_ctx.state = ISO_TP_WAIT_CF;
+        s_ctx.last_rx_tick      = HAL_GetTick();
+        s_ctx.rx_state = ISO_TP_RX_WAIT_CF;
 
         s_stream_sink(ISO_TP_STREAM_BEGIN, NULL, 0U, total_size);
         if (ff_payload > 0U) {
@@ -264,8 +281,8 @@ static void process_first_frame(uint32_t can_id, const uint8_t *data, uint8_t dl
     s_ctx.rx_expected_seq   = 1U;
     s_ctx.rx_can_id         = can_id;
     s_ctx.stream_mode       = 0U;
-    s_ctx.last_activity_tick = HAL_GetTick();
-    s_ctx.state = ISO_TP_WAIT_CF;
+    s_ctx.last_rx_tick      = HAL_GetTick();
+    s_ctx.rx_state = ISO_TP_RX_WAIT_CF;
 
     Debug_Print("[ISO-TP] FF total=%lu, got=%lu\r\n",
                 (unsigned long)total_size, (unsigned long)s_ctx.rx_received);
@@ -282,7 +299,7 @@ static void process_first_frame(uint32_t can_id, const uint8_t *data, uint8_t dl
  */
 static void process_consecutive_frame(const uint8_t *data, uint8_t dlc)
 {
-    if (s_ctx.state != ISO_TP_WAIT_CF) {
+    if (s_ctx.rx_state != ISO_TP_RX_WAIT_CF) {
         return;
     }
 
@@ -290,11 +307,8 @@ static void process_consecutive_frame(const uint8_t *data, uint8_t dlc)
     if (seq != s_ctx.rx_expected_seq) {
         Debug_Print("[ISO-TP] CF seq mismatch: got=%u exp=%u\r\n",
                      seq, s_ctx.rx_expected_seq);
-        if ((s_ctx.stream_mode != 0U) && (s_stream_sink != NULL)) {
-            s_stream_sink(ISO_TP_STREAM_ERROR, NULL, 0U, s_ctx.rx_total_size);
-        }
-        s_ctx.stream_mode = 0U;
-        s_ctx.state = ISO_TP_IDLE;
+        abort_stream_rx();
+        s_ctx.rx_state = ISO_TP_RX_IDLE;
         return;
     }
 
@@ -316,7 +330,7 @@ static void process_consecutive_frame(const uint8_t *data, uint8_t dlc)
 
     s_ctx.rx_received += (uint32_t)cf_payload;
     s_ctx.rx_expected_seq = (uint8_t)((s_ctx.rx_expected_seq + 1U) & 0x0FU);
-    s_ctx.last_activity_tick = HAL_GetTick();
+    s_ctx.last_rx_tick = HAL_GetTick();
 
     Debug_Print("[ISO-TP] CF seq=%u progress=%lu/%lu\r\n",
                 seq, (unsigned long)s_ctx.rx_received, (unsigned long)s_ctx.rx_total_size);
@@ -327,10 +341,10 @@ static void process_consecutive_frame(const uint8_t *data, uint8_t dlc)
                 s_stream_sink(ISO_TP_STREAM_END, NULL, 0U, s_ctx.rx_total_size);
             }
             s_ctx.stream_mode = 0U;
-            s_ctx.state = ISO_TP_IDLE;
+            s_ctx.rx_state = ISO_TP_RX_IDLE;
             Debug_Print("[ISO-TP] Stream complete\r\n");
         } else {
-            s_ctx.state = ISO_TP_COMPLETE;
+            s_ctx.rx_state = ISO_TP_RX_COMPLETE;
             Debug_Print("[ISO-TP] Multi-frame complete\r\n");
             dispatch_completed_message();
         }
@@ -344,20 +358,20 @@ static void process_flow_control(const uint8_t *data, uint8_t dlc)
 {
     (void)dlc;
 
-    if (s_ctx.state != ISO_TP_TX_WAIT_FC) {
+    if (s_ctx.tx_state != ISO_TP_TX_WAIT_FC) {
         return;
     }
 
     uint8_t fs = (uint8_t)(data[0] & 0x0FU);  /* Flow Status: byte0 하위 니블 */
 
     if (fs == ISO_TP_FC_CONTINUE) {
-        s_ctx.state = ISO_TP_TX_SEND_CF;
-        s_ctx.last_activity_tick = HAL_GetTick();
+        s_ctx.tx_state = ISO_TP_TX_SEND_CF;
+        s_ctx.last_tx_tick = HAL_GetTick();
         send_consecutive_frames();
     } else if (fs == ISO_TP_FC_WAIT) {
-        s_ctx.last_activity_tick = HAL_GetTick();
+        s_ctx.last_tx_tick = HAL_GetTick();
     } else {
-        s_ctx.state = ISO_TP_IDLE;
+        s_ctx.tx_state = ISO_TP_TX_IDLE;
     }
 }
 
@@ -446,16 +460,16 @@ static void send_first_frame(uint32_t can_id, const uint8_t *data, uint32_t tota
 
     if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx_header, frame) != HAL_OK) {
         Debug_Print("[ISO-TP] FF TX failed\r\n");
-        s_ctx.state = ISO_TP_IDLE;
+        s_ctx.tx_state = ISO_TP_TX_IDLE;
     } else {
-        s_ctx.last_activity_tick = HAL_GetTick();
+        s_ctx.last_tx_tick = HAL_GetTick();
         Debug_Print("[ISO-TP] FF TX total=%lu\r\n", (unsigned long)total_len);
     }
 }
 
 static void send_consecutive_frames(void)
 {
-    while (s_ctx.tx_sent < s_ctx.tx_total_size && s_ctx.state == ISO_TP_TX_SEND_CF) {
+    while (s_ctx.tx_sent < s_ctx.tx_total_size && s_ctx.tx_state == ISO_TP_TX_SEND_CF) {
         uint8_t frame[ISO_TP_FRAME_SIZE];
         (void)memset(frame, 0xCCU, sizeof(frame));
 
@@ -482,7 +496,7 @@ static void send_consecutive_frames(void)
 
         if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx_header, frame) != HAL_OK) {
             Debug_Print("[ISO-TP] CF TX failed\r\n");
-            s_ctx.state = ISO_TP_IDLE;
+            s_ctx.tx_state = ISO_TP_TX_IDLE;
             return;
         }
 
@@ -492,7 +506,7 @@ static void send_consecutive_frames(void)
 
     if (s_ctx.tx_sent >= s_ctx.tx_total_size) {
         Debug_Print("[ISO-TP] TX complete\r\n");
-        s_ctx.state = ISO_TP_IDLE;
+        s_ctx.tx_state = ISO_TP_TX_IDLE;
     }
 }
 
@@ -527,7 +541,22 @@ static void send_flow_control(uint32_t can_id, uint8_t fs, uint8_t bs, uint8_t s
  * ==================================================== */
 
 /**
+ * @brief  진행 중인 스트림 수신을 중단 통지 (싱크가 등록된 경우)
+ *         stream_mode 는 호출자가 클리어한다.
+ */
+static void abort_stream_rx(void)
+{
+    if ((s_ctx.stream_mode != 0U) && (s_stream_sink != NULL)) {
+        s_stream_sink(ISO_TP_STREAM_ERROR, NULL, 0U, s_ctx.rx_total_size);
+    }
+    s_ctx.stream_mode = 0U;
+}
+
+/**
  * @brief  조립 완료 → UDS 디스패처 호출 → 응답 전송
+ * @note   수신 종료만 담당. 응답 송신(TX)은 ISO_TP_SendResponse() 가 tx_state 로
+ *         독립적으로 관리하므로 여기서 건드리지 않는다. (이전 단일-state 설계에선
+ *         마지막 state=IDLE 이 멀티프레임 응답 TX_WAIT_FC 를 덮어쓰는 버그가 있었음.)
  */
 static void dispatch_completed_message(void)
 {
@@ -537,10 +566,11 @@ static void dispatch_completed_message(void)
     UDS_DispatchRequest(s_ctx.rx_buffer, s_ctx.rx_total_size,
                         response, &resp_len);
 
+    /* RX 종료. TX 상태는 건드리지 않는다. */
+    s_ctx.rx_state = ISO_TP_RX_IDLE;
+
     if (resp_len > 0U) {
         uint32_t resp_id = s_ctx.rx_can_id + 8U;  /* 0x7E0→0x7E8 */
         ISO_TP_SendResponse(resp_id, response, resp_len);
     }
-
-    s_ctx.state = ISO_TP_IDLE;
 }
