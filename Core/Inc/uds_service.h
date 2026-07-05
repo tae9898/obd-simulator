@@ -20,6 +20,7 @@ extern "C" {
 #endif
 
 #include "main.h"
+#include "can_addressing.h"   /* AddrType_t */
 
 /* === UDS 서비스 ID === */
 #define UDS_SID_DIAG_SESSION_CTRL    0x10U  /**< DiagnosticSessionControl */
@@ -72,14 +73,26 @@ void UDS_Init(void);
 
 /**
  * @brief  UDS 요청 디스패치
- * @param  request:     요청 데이터 (SID + 파라미터)
- * @param  request_len: 요청 길이
- * @param  response:    응답 버퍼
+ * @param  request:      요청 데이터 (SID + 파라미터)
+ * @param  request_len:  요청 길이
+ * @param  addr:         수신 어드레싱 타입 (Physical/Functional)
+ * @param  response:     응답 버퍼
  * @param  response_len: 응답 길이 (출력, 0=응답 없음)
- * @note   ISO-TP에서 조립 완료 시 호출됨
+ * @note   ISO-TP에서 조립 완료 시 호출됨.
+ *         기능적 요청(addr==ADDR_FUNCTIONAL)이고 해당 SID가 기능적 응답을
+ *         지원하지 않으면 응답을 억제(*response_len=0)한다 (ISO 14229-1).
  */
 void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
+                         AddrType_t addr,
                          uint8_t *response, uint16_t *response_len);
+
+/**
+ * @brief  SID 가 기능적 어드레싱(0x7DF)에서 응답 가능한 서비스인지 판단
+ * @note   OBD-II 서비스(0x01~0x0A, ISO 15031-5)만 기능적 응답 허용.
+ *         UDS 진단 서비스는 physical 전용(안전 정책: 브로드캐스트 세션/리셋 방지).
+ *         이 테이블 한 곳에서 정책 조정 가능.
+ */
+uint8_t UDS_IsFunctionallyAddressable(uint8_t sid);
 
 /* === 외부 변수 === */
 extern volatile uint8_t g_soft_reset_requested;

@@ -20,6 +20,7 @@ extern "C" {
 #endif
 
 #include "main.h"
+#include "can_addressing.h"   /* AddrType_t (Physical/Functional/Ignore) */
 
 /* === ISO-TP 상수 === */
 /**
@@ -99,6 +100,7 @@ typedef struct {
     uint32_t rx_received;                   /**< 지금까지 수신한 바이트 수 */
     uint8_t  rx_expected_seq;               /**< 다음에 올 CF 시퀀스 번호 */
     uint32_t rx_can_id;                     /**< 수신 CAN ID */
+    AddrType_t rx_addr_type;                /**< 수신 어드레싱 타입 (Physical/Functional) */
     uint8_t  stream_mode;                   /**< 1=스트림 경로(>MAX, 싱크로 전달), 0=버퍼 경로 */
 
     /* 송신 관련 */

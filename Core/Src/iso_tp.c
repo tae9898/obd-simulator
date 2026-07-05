@@ -71,6 +71,27 @@ void ISO_TP_ProcessFrame(uint32_t can_id, const uint8_t *data, uint8_t dlc)
     /* PCI 타입 판별: 첫 바이트의 상위 4비트 */
     uint8_t pci_type = data[0] & 0xF0U;
 
+    /* Flow Control 은 진행 중인 TX 트랜잭션에 묶인 제어 프레임.
+     * tester 의 FC 송신 can_id 가 노드 설정에 따라 달라질 수 있으므로
+     * 어드레싱 필터와 무관하게 처리한다 (process_flow_control 이 tx_state 로 가드). */
+    if (pci_type == ISO_TP_PCI_FLOW_CONTROL) {
+        process_flow_control(data, dlc);
+        return;
+    }
+
+    /* 어드레싱 분류 (RX 조립 경로에만 적용).
+     * 이 노드 대상(Physical 0x7E0 / Functional 0x7DF)이 아니면 무시 —
+     * 다른 노드 트래픽/노이즈는 조립·FC·응답 모두 스킵한다. */
+    AddrType_t addr = CAN_Addr_Classify(can_id);
+    if (addr == ADDR_IGNORE) {
+#if DEBUG_VERBOSE
+        Debug_Print("[ISO-TP] Ignored CAN ID 0x%lX (not addressed to us)\r\n",
+                    (unsigned long)can_id);
+#endif
+        return;
+    }
+    s_ctx.rx_addr_type = addr;
+
     switch (pci_type) {
         case ISO_TP_PCI_SINGLE_FRAME:
             process_single_frame(can_id, data, dlc);
@@ -80,9 +101,6 @@ void ISO_TP_ProcessFrame(uint32_t can_id, const uint8_t *data, uint8_t dlc)
             break;
         case ISO_TP_PCI_CONSECUTIVE:
             process_consecutive_frame(data, dlc);
-            break;
-        case ISO_TP_PCI_FLOW_CONTROL:
-            process_flow_control(data, dlc);
             break;
         default:
             Debug_Print("[ISO-TP] Unknown PCI: 0x%02X\r\n", data[0]);
@@ -200,6 +218,13 @@ static void process_single_frame(uint32_t can_id, const uint8_t *data, uint8_t d
  */
 static void process_first_frame(uint32_t can_id, const uint8_t *data, uint8_t dlc)
 {
+    /* 기능적 주소(0x7DF)로의 멀티프레임(FF)은 비표준 — FC를 브로드캐스트 버스에
+     * 쏘면 다른 ECU 와 충돌하므로 기능적 주소에서는 SF 만 허용하고 FF 는 무시한다. */
+    if (s_ctx.rx_addr_type == ADDR_FUNCTIONAL) {
+        Debug_Print("[ISO-TP] FF dropped on functional address\r\n");
+        return;
+    }
+
     /* §9.8.3 Table 23 (full-duplex): 송신 중에도 수신은 독립 동작. 세그먼트 수신이
      * 진행 중이면 현재 수신을 종료(스트림이면 ERROR 통지)하고 이 FF 로 재시작. */
     if (s_ctx.rx_state == ISO_TP_RX_WAIT_CF) {
@@ -564,13 +589,23 @@ static void dispatch_completed_message(void)
     uint16_t resp_len = 0U;
 
     UDS_DispatchRequest(s_ctx.rx_buffer, s_ctx.rx_total_size,
+                        s_ctx.rx_addr_type,
                         response, &resp_len);
 
     /* RX 종료. TX 상태는 건드리지 않는다. */
     s_ctx.rx_state = ISO_TP_RX_IDLE;
 
     if (resp_len > 0U) {
-        uint32_t resp_id = s_ctx.rx_can_id + 8U;  /* 0x7E0→0x7E8 */
+        /* 응답 ID:
+         *   기능적 요청(0x7DF) → 이 노드의 물리적 응답 ID(0x7E8).
+         *   물리적 요청(0x7E0) → rx_can_id + 8 (0x7E0→0x7E8).
+         *   (0x7DF + 8 = 0x7E7 은 잘못된 ID 이므로 분기 필요) */
+        uint32_t resp_id;
+        if (s_ctx.rx_addr_type == ADDR_FUNCTIONAL) {
+            resp_id = CAN_ID_PHYSICAL_RESP;   /* 0x7E8 */
+        } else {
+            resp_id = s_ctx.rx_can_id + 8U;   /* 0x7E0→0x7E8 */
+        }
         ISO_TP_SendResponse(resp_id, response, resp_len);
     }
 }

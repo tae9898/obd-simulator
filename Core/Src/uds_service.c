@@ -54,7 +54,21 @@ void UDS_Init(void)
     Debug_Print("[UDS] Dispatcher init OK\r\n");
 }
 
+uint8_t UDS_IsFunctionallyAddressable(uint8_t sid)
+{
+    /* OBD-II 서비스(ISO 15031-5, Mode 0x01~0x0A)만 0x7DF 기능적 응답 허용.
+     * UDS 진단 서비스(0x10/0x11/0x22/0x27/0x31)는 physical 전용 —
+     * 브로드캐스트로의 세션 변경/리셋/보안접근을 막기 위한 안전 정책. */
+    switch (sid) {
+        case UDS_SID_OBD2_CURRENT_DATA:   /* 0x01 */
+            return 1U;
+        default:
+            return 0U;
+    }
+}
+
 void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
+                         AddrType_t addr,
                          uint8_t *response, uint16_t *response_len)
 {
     if (request == NULL || request_len == 0U ||
@@ -63,6 +77,14 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
     }
 
     uint8_t sid = request[0];
+
+    /* 기능적 요청(0x7DF) + 기능적 응답 미지원 서비스 → 응답 억제.
+     * ISO 14229-1: 기능적 요청에 대해 응답 불가 서비스는 긍정/부정 응답 모두 송신 안 함. */
+    if (addr == ADDR_FUNCTIONAL && UDS_IsFunctionallyAddressable(sid) == 0U) {
+        *response_len = 0U;
+        Debug_Print("[UDS] Functional req, SID 0x%02X suppressed\r\n", sid);
+        return;
+    }
 
     /* S3 타임아웃 리셋 (활동 있음) */
     DiagSession_ResetS3Timeout();
