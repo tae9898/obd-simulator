@@ -28,7 +28,12 @@ extern "C" {
 #define UDS_SID_READ_DATA_BY_ID     0x22U  /**< ReadDataByIdentifier */
 #define UDS_SID_SECURITY_ACCESS     0x27U  /**< SecurityAccess */
 #define UDS_SID_ROUTINE_CONTROL     0x31U  /**< RoutineControl */
-#define UDS_SID_OBD2_CURRENT_DATA   0x01U  /**< OBD-II Mode 01 (레거시) */
+/* OBD-II 서비스 (ISO 15031-5 / SAE J1979) — 기능적(0x7DF) 응답 지원 대상 */
+#define UDS_SID_OBD2_CURRENT_DATA   0x01U  /**< Mode 01: 현재 데이터 */
+#define UDS_SID_OBD2_STORED_DTC     0x03U  /**< Mode 03: 저장 DTC */
+#define UDS_SID_OBD2_CLEAR_DTC      0x04U  /**< Mode 04: DTC 클리어 */
+#define UDS_SID_OBD2_PENDING_DTC    0x07U  /**< Mode 07: Pending DTC */
+#define UDS_SID_OBD2_VEHICLE_INFO   0x09U  /**< Mode 09: 차량 정보 */
 
 /* === 응답 SID 오프셋 === */
 #define UDS_RESPONSE_SID_OFFSET     0x40U  /**< 응답 SID = 요청 SID + 0x40 */
@@ -88,8 +93,11 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
 
 /**
  * @brief  SID 가 기능적 어드레싱(0x7DF)에서 응답 가능한 서비스인지 판단
- * @note   OBD-II 서비스(0x01~0x0A, ISO 15031-5)만 기능적 응답 허용.
- *         UDS 진단 서비스는 physical 전용(안전 정책: 브로드캐스트 세션/리셋 방지).
+ * @note   구현된 OBD-II 핵심 서비스(0x01/0x03/0x04/0x07/0x09, ISO 15031-5)만
+ *         기능적 응답 허용. UDS 진단 서비스(0x10/0x11/0x22/0x27/0x31)는
+ *         physical 전용 (안전 정책: 브로드캐스트 세션/리셋 방지).
+ *         미구현 OBD-II 모드(0x02/0x05/0x06/0x08/0x0A)도 제외 — 기능적 요청에는
+ *         부정 응답(0x7F)을 보내면 안 되므로 여기서 걸러 응답을 억제한다 (ISO 14229-1).
  *         이 테이블 한 곳에서 정책 조정 가능.
  */
 uint8_t UDS_IsFunctionallyAddressable(uint8_t sid);

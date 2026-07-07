@@ -41,6 +41,14 @@ static void handle_routine_control(const uint8_t *req, uint16_t req_len,
                                    uint8_t *resp, uint16_t *resp_len);
 static void handle_obd2_service01(const uint8_t *req, uint16_t req_len,
                                   uint8_t *resp, uint16_t *resp_len);
+static void handle_obd2_service03(const uint8_t *req, uint16_t req_len,
+                                  uint8_t *resp, uint16_t *resp_len);
+static void handle_obd2_service04(const uint8_t *req, uint16_t req_len,
+                                  uint8_t *resp, uint16_t *resp_len);
+static void handle_obd2_service07(const uint8_t *req, uint16_t req_len,
+                                  uint8_t *resp, uint16_t *resp_len);
+static void handle_obd2_service09(const uint8_t *req, uint16_t req_len,
+                                  uint8_t *resp, uint16_t *resp_len);
 static void build_negative_response(uint8_t sid, uint8_t nrc,
                                     uint8_t *resp, uint16_t *resp_len);
 
@@ -56,11 +64,17 @@ void UDS_Init(void)
 
 uint8_t UDS_IsFunctionallyAddressable(uint8_t sid)
 {
-    /* OBD-II 서비스(ISO 15031-5, Mode 0x01~0x0A)만 0x7DF 기능적 응답 허용.
+    /* 구현된 OBD-II 핵심 서비스(0x01/0x03/0x04/0x07/0x09)만 0x7DF 기능적 응답 허용.
      * UDS 진단 서비스(0x10/0x11/0x22/0x27/0x31)는 physical 전용 —
-     * 브로드캐스트로의 세션 변경/리셋/보안접근을 막기 위한 안전 정책. */
+     * 브로드캐스트로의 세션 변경/리셋/보안접근을 막기 위한 안전 정책.
+     * 미구현 OBD-II 모드(0x02/0x05/0x06/0x08/0x0A)도 제외 — 기능적 요청에는
+     * 부정 응답을 보내면 안 되므로 여기서 걸러 응답을 억제한다. */
     switch (sid) {
         case UDS_SID_OBD2_CURRENT_DATA:   /* 0x01 */
+        case UDS_SID_OBD2_STORED_DTC:     /* 0x03 */
+        case UDS_SID_OBD2_CLEAR_DTC:      /* 0x04 */
+        case UDS_SID_OBD2_PENDING_DTC:    /* 0x07 */
+        case UDS_SID_OBD2_VEHICLE_INFO:   /* 0x09 */
             return 1U;
         default:
             return 0U;
@@ -93,6 +107,22 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
     switch (sid) {
         case UDS_SID_OBD2_CURRENT_DATA:
             handle_obd2_service01(request, request_len, response, response_len);
+            break;
+
+        case UDS_SID_OBD2_STORED_DTC:
+            handle_obd2_service03(request, request_len, response, response_len);
+            break;
+
+        case UDS_SID_OBD2_CLEAR_DTC:
+            handle_obd2_service04(request, request_len, response, response_len);
+            break;
+
+        case UDS_SID_OBD2_PENDING_DTC:
+            handle_obd2_service07(request, request_len, response, response_len);
+            break;
+
+        case UDS_SID_OBD2_VEHICLE_INFO:
+            handle_obd2_service09(request, request_len, response, response_len);
             break;
 
         case UDS_SID_DIAG_SESSION_CTRL:
@@ -377,6 +407,95 @@ static void handle_obd2_service01(const uint8_t *req, uint16_t req_len,
      */
     (void)memcpy(resp, &obd_resp[1], (uint16_t)obd_len);
     *resp_len = (uint16_t)obd_len;
+}
+
+/**
+ * @brief  Mode 0x03: 저장된 DTC 읽기
+ * @note   ISO 15031-5 응답: [0x43, numDTC, (DTC 2바이트씩)...]
+ *         시뮬레이터는 DTC 가 없으므로 빈 리스트(numDTC=0)로 응답.
+ */
+static void handle_obd2_service03(const uint8_t *req, uint16_t req_len,
+                                  uint8_t *resp, uint16_t *resp_len)
+{
+    (void)req;
+    (void)req_len;
+    /* 요청은 [0x03] 만. 응답: [0x43, 0x00] (DTC 0개) */
+    resp[0] = UDS_SID_OBD2_STORED_DTC + UDS_RESPONSE_SID_OFFSET;  /* 0x43 */
+    resp[1] = 0x00U;  /* 상위 니블=포맷(0), 하위 니블=DTC 개수(0) */
+    *resp_len = 2U;
+}
+
+/**
+ * @brief  Mode 0x04: DTC 클리어
+ * @note   ISO 15031-5 응답: [0x44]. (시뮬레이터엔 클리어할 DTC 가 없음)
+ */
+static void handle_obd2_service04(const uint8_t *req, uint16_t req_len,
+                                  uint8_t *resp, uint16_t *resp_len)
+{
+    (void)req;
+    (void)req_len;
+    resp[0] = UDS_SID_OBD2_CLEAR_DTC + UDS_RESPONSE_SID_OFFSET;  /* 0x44 */
+    *resp_len = 1U;
+}
+
+/**
+ * @brief  Mode 0x07: Pending DTC 읽기
+ * @note   ISO 15031-5 응답: [0x47, (DTC 2바이트씩)...] — Mode 03 과 달리
+ *         numDTC 바이트가 없다. 빈이면 [0x47] 만.
+ */
+static void handle_obd2_service07(const uint8_t *req, uint16_t req_len,
+                                  uint8_t *resp, uint16_t *resp_len)
+{
+    (void)req;
+    (void)req_len;
+    resp[0] = UDS_SID_OBD2_PENDING_DTC + UDS_RESPONSE_SID_OFFSET;  /* 0x47 */
+    *resp_len = 1U;
+}
+
+/**
+ * @brief  Mode 0x09: 차량 정보
+ * @note   INF type 0x00 = 지원 INF 목록, 0x02 = VIN (ISO 15031-5).
+ *         미지원 INF 에는 OBD-II 표준대로 응답 없음(0x7F 부정 응답 사용 안 함).
+ *         VIN 응답(20바이트)은 obd_resp[8] 에 안 들어가므로 UDS response 버퍼에 직접 기록.
+ */
+static void handle_obd2_service09(const uint8_t *req, uint16_t req_len,
+                                  uint8_t *resp, uint16_t *resp_len)
+{
+    if (req_len < 2U) {
+        *resp_len = 0U;
+        return;
+    }
+
+    uint8_t inf_type = req[1];
+
+    switch (inf_type) {
+        case 0x00U:
+            /* 지원 INF 비트맵: INF 0x02(VIN) 지원 → bit1 = 0x02 */
+            resp[0] = UDS_SID_OBD2_VEHICLE_INFO + UDS_RESPONSE_SID_OFFSET;  /* 0x49 */
+            resp[1] = 0x00U;
+            resp[2] = 0x02U;  /* INF 0x02(VIN) 지원 */
+            resp[3] = 0x00U;
+            resp[4] = 0x00U;
+            resp[5] = 0x00U;
+            *resp_len = 6U;
+            break;
+
+        case 0x02U: {
+            /* VIN: [0x49, 0x02, num=1, VIN(17)] = 20바이트 (CAN-FD SF) */
+            size_t vin_len = strlen(s_vin);  /* VIN = ISO 3779 기준 17자리 */
+            resp[0] = UDS_SID_OBD2_VEHICLE_INFO + UDS_RESPONSE_SID_OFFSET;  /* 0x49 */
+            resp[1] = 0x02U;
+            resp[2] = 0x01U;  /* 제공하는 VIN 개수 = 1 */
+            (void)memcpy(&resp[3], s_vin, vin_len);
+            *resp_len = (uint16_t)(3U + vin_len);
+            break;
+        }
+
+        default:
+            /* 미지원 INF → 응답 없음 */
+            *resp_len = 0U;
+            break;
+    }
 }
 
 /**
