@@ -39,58 +39,6 @@ uint8_t OBD2_HandleService01(uint8_t pid, uint8_t *pTxData)
 }
 
 /**
- * @brief  수신된 CAN 메시지를 파싱하고 OBD-II 요청 처리 (Phase 0 호환)
- * @param  pRxHeader: 수신 CAN 메시지 헤더
- * @param  pRxData:   수신 CAN 데이터
- *
- * @note   OBD-II 요청 형식:
- *         [len, ServiceMode, PID, 0x00, 0x00, 0x00, 0x00, 0x00]
- *         예: [02, 0x01, 0x0C, 00, 00, 00, 00, 00] -> RPM 요청
- *
- *         OBD-II 응답 형식:
- *         [len, ServiceMode+0x40, PID, data..., 0x00, 0x00, 0x00]
- *         예: [04, 0x41, 0x0C, A, B8, 00, 00, 00] -> RPM 응답
- */
-void OBD2_ProcessRequest(const FDCAN_RxHeaderTypeDef *pRxHeader,
-                          const uint8_t *pRxData)
-{
-    uint8_t  tx_data[8] = {0};
-    uint8_t  tx_len     = 0;
-    uint8_t  pid;
-
-    /* --- 순수 로직 함수 호출 --- */
-    (void)pRxHeader;  /* Phase 0 호환성: 아직 ISR에서 직접 호출됨 */
-
-    if (pRxData == NULL) {
-        return;
-    }
-
-    /* 최소 [len, sid, pid] 필요 */
-    if (pRxData[0] < 2U) {
-        return;
-    }
-
-    pid = pRxData[2];
-    tx_len = OBD2_HandleService01(pid, tx_data);
-
-    /* --- CAN 응답 전송 (Phase 0 호환성 유지) --- */
-    if (tx_len > 0U) {
-        FDCAN_TxHeaderTypeDef tx_header;
-        tx_header.Identifier          = OBD2_RESPONSE_ID;
-        tx_header.IdType              = FDCAN_STANDARD_ID;
-        tx_header.TxFrameType         = FDCAN_DATA_FRAME;
-        tx_header.DataLength          = FDCAN_DLC_BYTES_8;
-        tx_header.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
-        tx_header.BitRateSwitch       = FDCAN_BRS_ON;
-        tx_header.FDFormat            = FDCAN_FD_CAN;
-        tx_header.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
-        tx_header.MessageMarker       = 0U;
-
-        HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx_header, tx_data);
-    }
-}
-
-/**
  * @brief  시뮬레이션 상태 값을 주기적으로 업데이트
  * @param  pState: 시뮬레이션 상태 구조체
  *

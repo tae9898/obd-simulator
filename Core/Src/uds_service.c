@@ -378,8 +378,8 @@ static void handle_routine_control(const uint8_t *req, uint16_t req_len,
 
 /**
  * @brief  SID 0x01: OBD-II Mode 01 브리지
- * @note   기존 OBD2_ProcessRequest()를 UDS 파이프라인에서 호출.
- *         Phase 0 코드를 재사용하면서 CAN 직접 처리는 제거.
+ * @note   순수 로직 핸들러 OBD2_HandleService01()를 UDS 파이프라인에서 호출.
+ *         CAN I/O는 ISO-TP가 담당하므로 여기서는 로직만 재사용.
  */
 static void handle_obd2_service01(const uint8_t *req, uint16_t req_len,
                                   uint8_t *resp, uint16_t *resp_len)

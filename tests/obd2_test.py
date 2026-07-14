@@ -852,7 +852,7 @@ def main():
         print(Color.fail_msg(str(e)))
         sys.exit(1)
     except KeyboardInterrupt:
-        print(f"\n{Color.YELLOW}사용자 중단${Color.NC}")
+        print(f"\n{Color.YELLOW}사용자 중단{Color.NC}")
         sys.exit(130)
     finally:
         # vcan 정리
