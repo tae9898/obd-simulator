@@ -249,8 +249,8 @@ class OBD2Tester:
     SERVICE_SHOW_CURRENT_DATA = 0x01
     SERVICE_RESPONSE_OFFSET = 0x40  # 응답 서비스 = 요청 서비스 + 0x40
 
-    # ISO-TP PCI 타입
-    ISO_TP_SINGLE_FRAME = 0x01
+    # ISO-TP PCI 타입 (상위 니블, ISO 15765-2): SF=0x00, FF=0x10, CF=0x20, FC=0x30
+    ISO_TP_PCI_SF = 0x00
 
     def __init__(self, interface: str, bitrate: int = 500000):
         """
@@ -276,6 +276,7 @@ class OBD2Tester:
                 interface='socketcan',
                 channel=self.interface,
                 bitrate=self.bitrate,
+                fd=True,   # CAN-FD(BRS) 응답 수신 — 펌웨어가 항상 FD로 송신
             )
             print(Color.info_msg(f"CAN 버스 연결 성공: {self.interface}"))
             print(Color.info_msg(f"  버스 상태: {self.bus.state}"))
@@ -289,116 +290,144 @@ class OBD2Tester:
             self.bus = None
             print(Color.info_msg(f"CAN 버스 연결 종료: {self.interface}"))
 
-    def send_request(self, pid: int, timeout: float = 2.0) -> Optional[can.Message]:
+    def send_service_request(self, service_id: int, payload=(),
+                             can_id: Optional[int] = None,
+                             timeout: float = 2.0) -> Optional[can.Message]:
         """
-        OBD-II PID 요청을 전송하고 응답을 수신합니다.
+        임의의 OBD-II/UDS 서비스 요청을 ISO-TP 단일 프레임(SF)로 전송하고 응답 수신.
 
-        ISO-TP 단일 프레임 (SF) 형식으로 요청을 생성합니다:
-        - 바이트0: PCI 타입 = 0x01 (SF)
-        - 바이트1: 데이터 길이 = 0x02
-        - 바이트2: 서비스 ID = 0x01 (Show Current Data)
-        - 바이트3: PID
-        - 바이트4~7: 패딩 (0x00)
+        표준 ISO 15765-2 SF: byte0 = 0x0L (하위 니블 = 페이로드 길이),
+        byte1 = 서비스 ID, byte2.. = 페이로드(PID 등). 8바이트 미만은 0x00 패딩.
 
         Args:
-            pid: 요청할 OBD-II PID (예: 0x0D = 차속)
-            timeout: 응답 대기 시간 (초, 기본: 2초)
+            service_id: 서비스 ID (예: 0x01=Mode01, 0x03, 0x09, 0x10)
+            payload:    서비스 바이트 뒤에 붙는 페이로드 (PID, INF type 등)
+            can_id:     요청 CAN ID (기본 0x7E0 물리적, 0x7DF=기능적 브로드캐스트)
+            timeout:    응답 대기 시간 (초)
 
         Returns:
             수신된 CAN 메시지 또는 None (타임아웃 시)
         """
         if not self.bus:
             raise RuntimeError("CAN 버스에 연결되어 있지 않습니다")
+        if can_id is None:
+            can_id = self.REQUEST_ID
 
-        # ISO-TP 단일 프레임 요청 생성
-        # PCI=0x01(SF), 길이=0x02, 서비스=0x01, PID, 패딩
-        request_data = bytes([
-            self.ISO_TP_SINGLE_FRAME,  # PCI: 단일 프레임
-            0x02,                       # 데이터 길이
-            self.SERVICE_SHOW_CURRENT_DATA,  # 서비스 ID: Show Current Data
-            pid,                        # 요청 PID
-            0x00, 0x00, 0x00, 0x00      # 패딩
-        ])
+        payload = bytes(payload)
+        length = 1 + len(payload)  # 서비스 바이트 + 페이로드
+        if length > 7:
+            raise ValueError(f"SF 페이로드 초과 ({length}>7) — 멀티프레임 필요(미지원)")
 
-        # CAN 메시지 생성 및 전송
+        # 표준 SF: [길이, 서비스, 페이로드, 0x00 패딩...]
+        request_data = bytearray([length & 0x0F, service_id])
+        request_data.extend(payload)
+        request_data.extend(b'\x00' * (8 - len(request_data)))
+
         request_msg = can.Message(
-            arbitration_id=self.REQUEST_ID,
-            data=request_data,
+            arbitration_id=can_id,
+            data=bytes(request_data[:8]),
             is_extended_id=False,
         )
 
         try:
             self.bus.send(request_msg)
         except can.CanError as e:
-            print(Color.fail_msg(f"요청 전송 실패 (PID 0x{pid:02X}): {e}"))
+            print(Color.fail_msg(f"요청 전송 실패 (SID 0x{service_id:02X}): {e}"))
             return None
 
-        # 응답 수신 대기
         try:
-            response_msg = self.bus.recv(timeout=timeout)
-            if response_msg is None:
-                return None
-
-            # 응답 CAN ID 확인
-            if response_msg.arbitration_id != self.RESPONSE_ID:
-                print(Color.info_msg(
-                    f"예상 외 CAN ID 수신: 0x{response_msg.arbitration_id:03X} "
-                    f"(예상: 0x{self.RESPONSE_ID:03X})"
-                ))
-                # 브로드캐스트 응답 ID도 허용
-
-            return response_msg
-
+            return self.bus.recv(timeout=timeout)
         except can.CanError as e:
-            print(Color.fail_msg(f"응답 수신 오류 (PID 0x{pid:02X}): {e}"))
+            print(Color.fail_msg(f"응답 수신 오류 (SID 0x{service_id:02X}): {e}"))
             return None
+
+    def send_request(self, pid: int, timeout: float = 2.0) -> Optional[can.Message]:
+        """Mode 01 PID 요청 — send_service_request(0x01, [pid]) 의 얇은 래퍼."""
+        return self.send_service_request(
+            self.SERVICE_SHOW_CURRENT_DATA, (pid,), self.REQUEST_ID, timeout
+        )
+
+    def _drain_rx(self):
+        """소켓 버퍼에 남은 잔여 프레임을 비운다 (응답 억제 테스트 전 등)."""
+        if not self.bus:
+            return
+        while True:
+            if self.bus.recv(timeout=0.0) is None:
+                break
 
     @staticmethod
-    def parse_response(msg: can.Message) -> Optional[dict]:
+    def parse_sf_response(msg: Optional[can.Message],
+                          expected_service: Optional[int] = None) -> Optional[dict]:
         """
-        OBD-II 응답 메시지를 파싱합니다.
+        ISO-TP 단일 프레임(SF) 응답을 표준 레이아웃으로 파싱.
 
-        ISO-TP 단일 프레임 응답 형식:
-        - 바이트0: PCI 타입 (0x01 = SF) 또는 길이
-        - 바이트1: 데이터 길이 (PCI=0x01인 경우)
-        - 바이트2: 서비스 ID (요청 서비스 + 0x40)
-        - 바이트3: 응답 PID
-        - 바이트4+: 응답 데이터
-
-        Args:
-            msg: 수신된 CAN 메시지
+        표준 SF: byte0 = 0x0L (하위 니블=길이), byte1 = 서비스 ID, byte2.. = 페이로드.
+        CAN-FD escape SF(byte0=0x00, byte1=길이)도 처리. 부정 응답(0x7F)도 인식.
 
         Returns:
-            파싱된 응답 딕셔너리 또는 None (파싱 실패 시)
-            {
-                'service_id': int,
-                'pid': int,
-                'data': bytes,
-                'raw': str (16진수 문자열)
-            }
+            {service_id, payload: bytes, raw: str, neg: bool, rejected_sid, nrc}
+            expected_service 가 주어지면 positive 응답이 (sid|0x40)과 불일치 시 None.
         """
         if not msg or not msg.data:
             return None
 
-        data = msg.data
-
-        # 최소 길이 확인 (PCI + 길이 + 서비스 + PID = 4바이트)
-        if len(data) < 4:
+        data = bytes(msg.data)
+        if len(data) < 2:
             return None
 
-        # 서비스 ID 확인: 0x41 (Show Current Data 응답)
-        service_id = data[2]
-        if service_id != 0x41:
+        # SF 길이 추출 (classic / escape)
+        if (data[0] & 0x0F) == 0x00 and len(data) >= 3:
+            length = data[1]
+            body = data[2:2 + length]
+        else:
+            length = data[0] & 0x0F
+            body = data[1:1 + length]
+
+        if len(body) < 1:
             return None
 
-        pid = data[3]
-        response_data = data[4:]
+        service_id = body[0]
+        payload = bytes(body[1:])
+        raw = ''.join(f'{b:02X}' for b in data)
+
+        # 부정 응답: [0x7F, rejected_sid, nrc]
+        if service_id == 0x7F:
+            return {
+                'service_id': 0x7F,
+                'payload': payload,
+                'raw': raw,
+                'neg': True,
+                'rejected_sid': body[1] if len(body) > 1 else None,
+                'nrc': body[2] if len(body) > 2 else None,
+            }
+
+        # positive 응답 검증
+        if expected_service is not None and service_id != (expected_service | 0x40):
+            return None
 
         return {
             'service_id': service_id,
-            'pid': pid,
-            'data': bytes(response_data),
-            'raw': ''.join(f'{b:02X}' for b in data),
+            'payload': payload,
+            'raw': raw,
+            'neg': False,
+            'rejected_sid': None,
+            'nrc': None,
+        }
+
+    def parse_response(self, msg: Optional[can.Message]) -> Optional[dict]:
+        """Mode 01 응답 파싱 — parse_sf_response(expected_service=0x01) 래퍼.
+        기존 test_pid/ramp/stress 호환을 위해 {service_id, pid, data, raw} 반환."""
+        sf = self.parse_sf_response(msg, expected_service=self.SERVICE_SHOW_CURRENT_DATA)
+        if sf is None or sf['neg']:
+            return None
+        payload = sf['payload']
+        if len(payload) < 1:
+            return None
+        return {
+            'service_id': sf['service_id'],
+            'pid': payload[0],
+            'data': bytes(payload[1:]),
+            'raw': sf['raw'],
         }
 
     def test_pid(self, obd2_pid: OBD2PID, timeout: float = 2.0) -> TestResult:
@@ -462,6 +491,124 @@ class OBD2Tester:
             raw_data=parsed['raw'],
             decoded_value=decoded,
         )
+
+    # =============================================
+    # OBD-II Mode 03/04/07/09 + Functional (0x7DF)
+    # =============================================
+    def _run_sf_test(self, name: str, service_id: int, request_payload=(),
+                     can_id: Optional[int] = None, expected_service: Optional[int] = None,
+                     expect_no_response: bool = False, expected_nrc: Optional[int] = None,
+                     timeout: float = 2.0, extra_check=None) -> TestResult:
+        """SF 단일프레임 서비스 요청의 공통 검증 로직."""
+        if can_id is None:
+            can_id = self.REQUEST_ID
+
+        # 응답 억제 케이스: 잔여 프레임 비우고 타임아웃(응답 없음) 기대
+        if expect_no_response:
+            self._drain_rx()
+            msg = self.send_service_request(service_id, request_payload, can_id, timeout)
+            if msg is None:
+                return TestResult(name=name, status=TestStatus.PASS,
+                                  detail="응답 없음 (억제 확인)")
+            raw = msg.data.hex().upper() if msg.data else ""
+            return TestResult(name=name, status=TestStatus.FAIL,
+                              detail=f"억제되어야 하나 응답 수신 0x{msg.arbitration_id:03X}",
+                              raw_data=raw)
+
+        msg = self.send_service_request(service_id, request_payload, can_id, timeout)
+        if msg is None:
+            return TestResult(name=name, status=TestStatus.FAIL,
+                              detail=f"응답 없음 (타임아웃 {timeout}s)")
+
+        sf = self.parse_sf_response(msg, expected_service=expected_service)
+        if sf is None:
+            return TestResult(name=name, status=TestStatus.FAIL,
+                              detail="응답 파싱 실패",
+                              raw_data=msg.data.hex().upper())
+
+        # NRC 기대 케이스
+        if expected_nrc is not None:
+            if not sf['neg'] or sf['nrc'] != expected_nrc:
+                got = f"0x{sf['nrc']:02X}" if sf['neg'] else "positive"
+                return TestResult(name=name, status=TestStatus.FAIL,
+                                  detail=f"NRC 0x{expected_nrc:02X} 기대, 수신 {got}",
+                                  raw_data=sf['raw'])
+            return TestResult(name=name, status=TestStatus.PASS,
+                              detail=f"NRC 0x{expected_nrc:02X} (sid 0x{sf['rejected_sid']:02X})",
+                              raw_data=sf['raw'])
+
+        # positive 응답 — 부정 응답이면 실패
+        if sf['neg']:
+            return TestResult(name=name, status=TestStatus.FAIL,
+                              detail=f"부정 응답 NRC 0x{sf['nrc']:02X}",
+                              raw_data=sf['raw'])
+
+        if extra_check is not None:
+            ok, detail = extra_check(msg, sf)
+            return TestResult(name=name,
+                              status=TestStatus.PASS if ok else TestStatus.FAIL,
+                              detail=detail, raw_data=sf['raw'])
+
+        return TestResult(name=name, status=TestStatus.PASS,
+                          detail=f"service 0x{sf['service_id']:02X}",
+                          raw_data=sf['raw'])
+
+    def test_mode03_stored_dtc(self, timeout: float = 2.0) -> TestResult:
+        """Mode 0x03 저장 DTC: [0x01,0x03] → [0x02,0x43,0x00] (DTC 0개)."""
+        return self._run_sf_test(
+            "Mode 03 저장 DTC", 0x03, expected_service=0x03, timeout=timeout,
+            extra_check=lambda m, s: (
+                s['payload'] == b'\x00',
+                f"numDTC=0 ({s['payload'].hex().upper() or 'empty'})"))
+
+    def test_mode04_clear_dtc(self, timeout: float = 2.0) -> TestResult:
+        """Mode 0x04 DTC 클리어: [0x01,0x04] → [0x01,0x44]."""
+        return self._run_sf_test(
+            "Mode 04 DTC 클리어", 0x04, expected_service=0x04, timeout=timeout,
+            extra_check=lambda m, s: (
+                len(s['payload']) == 0,
+                f"길이 {len(s['payload'])} (빈 응답)"))
+
+    def test_mode07_pending_dtc(self, timeout: float = 2.0) -> TestResult:
+        """Mode 0x07 Pending DTC: [0x01,0x07] → [0x01,0x47] (numDTC 바이트 없음)."""
+        return self._run_sf_test(
+            "Mode 07 Pending DTC", 0x07, expected_service=0x07, timeout=timeout,
+            extra_check=lambda m, s: (
+                len(s['payload']) == 0,
+                f"길이 {len(s['payload'])} (numDTC 바이트 없음)"))
+
+    def test_mode09_inf_support(self, timeout: float = 2.0) -> TestResult:
+        """Mode 0x09 INF 0x00: [0x02,0x09,0x00] → [0x06,0x49,0x00,0x02,...] (INF0x02=VIN 지원)."""
+        return self._run_sf_test(
+            "Mode 09 INF 지원목록", 0x09, request_payload=b'\x00',
+            expected_service=0x09, timeout=timeout,
+            extra_check=lambda m, s: (
+                len(s['payload']) >= 2 and (s['payload'][1] & 0x02) != 0,
+                f"INF 비트맵: {s['payload'].hex().upper()}"))
+
+    def test_functional_response(self, timeout: float = 2.0) -> TestResult:
+        """0x7DF 기능적 Mode 01 PID 0x0C → 응답 ID 0x7E8 (0x7E7 아님) 매핑 검증."""
+        def check(m, s):
+            if m.arbitration_id != self.RESPONSE_ID:
+                return (False, f"응답 ID 0x{m.arbitration_id:03X} (기대 0x{self.RESPONSE_ID:03X})")
+            if not s['payload'] or s['payload'][0] != 0x0C:
+                return (False, "PID 불일치")
+            return (True, "0x7DF→0x7E8 매핑 OK, PID 0x0C")
+        return self._run_sf_test(
+            "Functional 0x7DF 응답매핑", 0x01, request_payload=b'\x0C',
+            can_id=self.BROADCAST_ID, expected_service=0x01,
+            timeout=timeout, extra_check=check)
+
+    def test_functional_suppressed(self, timeout: float = 0.6) -> TestResult:
+        """0x7DF 기능적 SID 0x10(세션제어) → 응답 억제 (UDS는 functional 미지원)."""
+        return self._run_sf_test(
+            "Functional 0x7DF SID 0x10 억제", 0x10, request_payload=b'\x01',
+            can_id=self.BROADCAST_ID, expect_no_response=True, timeout=timeout)
+
+    def test_unsupported_mode_nrc(self, timeout: float = 2.0) -> TestResult:
+        """물리적 Mode 0x02(미구현) → NRC 0x7F/0x02/0x11 (serviceNotSupported)."""
+        return self._run_sf_test(
+            "미지원 Mode 0x02 NRC", 0x02, expected_nrc=0x11, timeout=timeout)
 
     def test_ramp_up_down(self,
                            pid: int = 0x0C,
@@ -711,6 +858,7 @@ def main():
   sudo python3 obd2_test.py vcan0          # virtual CAN
   sudo python3 obd2_test.py vcan0 --stress 50   # 스트레스 테스트 50회
   sudo python3 obd2_test.py vcan0 --ramp-samples 30 --ramp-interval 0.3
+  sudo python3 obd2_test.py vcan0 --no-modes     # Mode 03/04/07/09+functional 생략
         """,
     )
     parser.add_argument(
@@ -758,6 +906,11 @@ def main():
         '--no-stress',
         action='store_true',
         help='스트레스 테스트 생략',
+    )
+    parser.add_argument(
+        '--no-modes',
+        action='store_true',
+        help='Mode 03/04/07/09 + functional(0x7DF) 테스트 생략',
     )
     parser.add_argument(
         '--setup-vcan',
@@ -816,7 +969,30 @@ def main():
                     print(f"    수신 프레임: {result.raw_data}")
 
         # =============================================
-        # 2. 램프 업/다운 시뮬레이션 검증
+        # 2. OBD-II Mode 03/04/07/09 + Functional (0x7DF)
+        # =============================================
+        if not args.no_modes:
+            print(Color.header("OBD-II Mode 03/04/07/09 + Functional (0x7DF)"))
+            mode_tests = [
+                tester.test_mode03_stored_dtc(args.timeout),
+                tester.test_mode04_clear_dtc(args.timeout),
+                tester.test_mode07_pending_dtc(args.timeout),
+                tester.test_mode09_inf_support(args.timeout),
+                tester.test_functional_response(args.timeout),
+                tester.test_functional_suppressed(),
+                tester.test_unsupported_mode_nrc(args.timeout),
+            ]
+            for result in mode_tests:
+                report.add(result)
+                if result.status == TestStatus.PASS:
+                    print(f"  {Color.pass_msg(result.name)} - {result.detail}")
+                else:
+                    print(f"  {Color.fail_msg(result.name)} - {result.detail}")
+                    if result.raw_data:
+                        print(f"    수신 프레임: {result.raw_data}")
+
+        # =============================================
+        # 3. 램프 업/다운 시뮬레이션 검증
         # =============================================
         if not args.no_ramp:
             print(Color.header("램프 업/다운 시뮬레이션 검증"))
@@ -834,7 +1010,7 @@ def main():
                 print(f"  {Color.fail_msg(ramp_result.name)} - {ramp_result.detail}")
 
         # =============================================
-        # 3. 스트레스 테스트
+        # 4. 스트레스 테스트
         # =============================================
         if not args.no_stress:
             print(Color.header("스트레스 테스트"))
