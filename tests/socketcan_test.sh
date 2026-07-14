@@ -59,9 +59,11 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m' # 색상 리셋
 
-print_pass() { echo -e "  ${GREEN}[PASS]${NC} $1"; ((PASS_COUNT++)); }
-print_fail() { echo -e "  ${RED}[FAIL]${NC} $1"; ((FAIL_COUNT++)); }
-print_skip() { echo -e "  ${YELLOW}[SKIP]${NC} $1"; ((SKIP_COUNT++)); }
+print_pass() { echo -e "  ${GREEN}[PASS]${NC} $1"; ((++PASS_COUNT)); }
+print_fail() { echo -e "  ${RED}[FAIL]${NC} $1"; ((++FAIL_COUNT)); }
+print_skip() { echo -e "  ${YELLOW}[SKIP]${NC} $1"; ((++SKIP_COUNT)); }
+# 참고: 전위 증감 ((++VAR)) 사용 — 후위 ((VAR++)) 는 VAR==0 일 때 산술식 값이 0 이라
+# exit status 1 을 반환하고, set -euo pipefail 아래서 스크립트를 종료시킨다.
 print_info() { echo -e "  ${CYAN}[INFO]${NC} $1"; }
 print_header() { echo -e "\n${CYAN}=== $1 ===${NC}"; }
 
@@ -441,8 +443,8 @@ run_stress_test() {
 
         if [[ -z "$response" ]]; then
             echo -e "${RED}응답 없음${NC}"
-            ((local_fail++))
-            ((FAIL_COUNT++))
+            ((++local_fail))
+            ((++FAIL_COUNT))
             continue
         fi
 
@@ -451,12 +453,12 @@ run_stress_test() {
 
         if validate_response "$frame_data" "$target_pid"; then
             echo -e "${GREEN}OK${NC} (프레임: ${frame_data})"
-            ((local_pass++))
-            ((PASS_COUNT++))
+            ((++local_pass))
+            ((++PASS_COUNT))
         else
             echo -e "${RED}형식 오류${NC} (프레임: ${frame_data})"
-            ((local_fail++))
-            ((FAIL_COUNT++))
+            ((++local_fail))
+            ((++FAIL_COUNT))
         fi
     done
 
@@ -504,18 +506,18 @@ run_ramp_test() {
         local rpm=$(( (byte_a * 256 + byte_b) / 4 ))
 
         samples+=("$rpm")
-        ((valid_samples++))
+        ((++valid_samples))
 
         # 방향 변화 감지
         if [[ $prev_rpm -ge 0 ]]; then
             if (( rpm > prev_rpm )); then
                 if [[ "$ramp_direction" == "down" ]]; then
-                    ((direction_changes++))
+                    ((++direction_changes))
                 fi
                 ramp_direction="up"
             elif (( rpm < prev_rpm )); then
                 if [[ "$ramp_direction" == "up" ]]; then
-                    ((direction_changes++))
+                    ((++direction_changes))
                 fi
                 ramp_direction="down"
             fi
@@ -549,7 +551,7 @@ run_ramp_test() {
     local max_rpm=${samples[0]}
     local sum=0
     for s in "${samples[@]}"; do
-        ((sum += s))
+        sum=$((sum + s))
         (( s < min_rpm )) && min_rpm=$s
         (( s > max_rpm )) && max_rpm=$s
     done
