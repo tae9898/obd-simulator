@@ -17,13 +17,14 @@
 #include "diag_session.h"
 #include "obd2_simulator.h"
 #include "uart_debug.h"
+#include "vehicle_config.h"
 #include <string.h>
 
-/* === ECU 정체 정보 === */
-static const char s_ecu_name[]   = "OBD-SIM-G431";
-static const char s_hw_version[] = "HW Rev1.0";
-static const char s_sw_version[] = "SW Phase1.0";
-static const char s_vin[]        = "WVWZZZ3CZWE000001";
+/* === ECU 정체 정보 (값은 vehicle_config.h 의 단일 설정) === */
+static const char s_ecu_name[]   = ECU_NAME;
+static const char s_hw_version[] = VEHICLE_HW_VERSION;
+static const char s_sw_version[] = VEHICLE_SW_VERSION;
+static const char s_vin[]        = VEHICLE_VIN;
 
 /* === 소프트 리셋 플래그 (main.c에서 확인) === */
 volatile uint8_t g_soft_reset_requested = 0U;
