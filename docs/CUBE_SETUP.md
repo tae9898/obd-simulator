@@ -1,5 +1,7 @@
 # STM32CubeMX FDCAN1 Classic CAN 설정 가이드
 
+> ⚠️ **HSE 클럭 오기 정정 (2026-07)**: 본 문서는 초기 작성 시 **HSE 8MHz** 가정으로 작성됐으나, 실제 Nucleo-G431RB **MB1367 크리스탈은 24MHz**(UM2505 확인). 아래의 8MHz 기준 PLL/비트타이밍 계산은 더 이상 유효하지 않음. **진실 소스**: `Core/Src/main.c` `SystemClock_Config` 주석(HSE 24MHz, FDCAN 클럭) · Claude 메모리 `sdv-can-fdcan-rx-debug`. 본 가이드는 CubeMX 워크플로우 참고용(실제 펌웨어는 bare-metal 직접 구현, CubeMX 비사용).
+
 > 대상 보드: STM32G431RB Nucleo (Nucleo-G431RB)
 > 목적: FDCAN1을 Classic CAN 500kbps로 설정하여 OBD-II 통신 구현
 
