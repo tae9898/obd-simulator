@@ -169,7 +169,7 @@ int main(void)
         }
     }
 
-    /* --- FDCAN1 필터 설정 (CAN ID 0x7E0만 수신) --- */
+    /* --- FDCAN1 필터 설정 (글로벌: 모든 표준 프레임 0x000-0x7FF → RX FIFO0; OBD-II 요청 0x7E0) --- */
     if (FDCAN1_ConfigureFilters(&hfdcan1) != HAL_OK) {
         Debug_Print("[ERROR] FDCAN1 filter config failed\r\n");
         while (1) {
@@ -199,7 +199,7 @@ int main(void)
 
     Debug_Print("[INIT] FDCAN1 ready - CAN-FD 500kbps/2Mbps (BRS) @ HSE 24MHz\r\n");
 
-    Debug_Print("[INIT] Listening on CAN ID 0x%03X\r\n", OBD2_REQUEST_ID);
+    Debug_Print("[INIT] Accepting all std frames 0x000-0x7FF -> RX FIFO0 (OBD-II req 0x%03X, resp 0x7E8)\r\n", OBD2_REQUEST_ID);
     Debug_Print("[INIT] UDS Services: 0x10, 0x11, 0x22, 0x27, 0x31\r\n");
     Debug_Print("[INIT] OBD-II PIDs: 0x00, 0x05, 0x0C, 0x0D\r\n");
 
@@ -225,8 +225,12 @@ int main(void)
         }
     }
 
-    /* --- IWDG 초기화 (임시 비활성화, 디버그용) --- */
-#if 0
+    /* --- IWDG 초기화 (독립 워치독, multitask 감시) ---
+     * 모든 태스크(MAIN/CAN_RX/RS485)가 alive 플래그를 세트할 때만 refresh.
+     * 하나라도 멈추면 ~2초 내 리셋. HAL_IWDG_Init 전에 LSI(내부 32kHz) 활성화 필수. */
+#if 1
+    __HAL_RCC_LSI_ENABLE();
+    while (__HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) == RESET) { }
     hiwdg.Instance            = IWDG;
     hiwdg.Init.Prescaler      = IWDG_PRESCALER_32;
     hiwdg.Init.Reload         = 2000U;
@@ -235,7 +239,7 @@ int main(void)
         Debug_Print("[ERROR] IWDG init failed\r\n");
         while (1);
     }
-    Debug_Print("[IWDG] Watchdog started - timeout 2000ms, refresh every 500ms\r\n");
+    Debug_Print("[IWDG] Watchdog started - timeout ~2000ms (refresh on all-tasks-alive)\r\n");
 #else
     Debug_Print("[IWDG] DISABLED for debug\r\n");
 #endif
