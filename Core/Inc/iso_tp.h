@@ -26,10 +26,15 @@ extern "C" {
 /**
  * 최대 메시지 크기 (버퍼 풀-조립 상한).
  * - total ≤ 이 값: rx_buffer/tx_buffer 에 통째로 조립 (일반 UDS 멀티프레임)
- * - total > 이 값: 스트림 싱크로 CF 청크를 직접 전달 (OTA 대용량, 풀-버퍼링 아님)
- * 4095 = classic FF(12-bit) 한계. 초과분은 escape FF(32-bit)로 처리.
+ * - total > 이 값: 스트림 싱크로 CF 청크를 직접 전달 (OTA 대용량, 풀-버큼링 아님)
+ *
+ * RAM 절약을 위해 OBD-II/UDS 실사용에 충분한 512B 로 축소 (이전 4095B).
+ * 가장 긴 응답(VIN 17B + 헤더) 도 100B 미만이며 UDS_MAX_RESPONSE_SIZE(64) 가 상한.
+ * OTA 대용량(>512)은 이미 ISO_TP_RegisterStreamSink() 스트림 경로로 우회된다.
+ * classic FF 한계(FF_ESCAPE_THRESHOLD=4095) 와는 무관 — escape FF 로직은 그대로.
+ * 축소 효과: rx_buffer + tx_buffer 합산 RAM 약 −7.1KB.
  */
-#define ISO_TP_MAX_MESSAGE_SIZE    4095U
+#define ISO_TP_MAX_MESSAGE_SIZE    512U
 
 /** classic FF 12-bit 길이 한계. 이 값 초과 시 escape FF 사용 (ISO 15765-2:2016) */
 #define ISO_TP_FF_ESCAPE_THRESHOLD 4095U
@@ -48,6 +53,13 @@ extern "C" {
 
 /** Flow Control STmin (ms, 0 = 최소 지연) */
 #define ISO_TP_FC_STMIN            5U
+
+/**
+ * 수신측 tester 가 FC.WAIT 를 보낼 수 있는 최대 횟수 (송신자 자체 한계).
+ * 0 = 무제한. 0보다 크면 WFTmax 초과 시 송신 중단 → hang 방지.
+ * ISO 15765-2 의 N_WFTmax 에 해당. 값은 구현 정의(전형적 1~수십); 7 = 시뮬레이터 무난 상한.
+ */
+#define ISO_TP_MAX_WFT             7U
 
 /* === ISO-TP PCI 타입 (Protocol Control Information) === */
 /**
@@ -109,6 +121,10 @@ typedef struct {
     uint32_t tx_sent;                       /**< 지금까지 송신한 바이트 수 */
     uint8_t  tx_seq;                        /**< 다음 CF 시퀀스 번호 */
     uint32_t tx_can_id;                     /**< 송신 CAN ID */
+    uint8_t  tx_stmin;                      /**< tester 가 요구한 CF 간격 (ms, FC.STmin) */
+    uint8_t  tx_block_size;                 /**< tester 가 요구한 BS (0=무제한, FC.BS) */
+    uint8_t  tx_block_counter;              /**< 현재 블록에서 보낸 CF 수 */
+    uint8_t  tx_wait_frame_count;           /**< FC.WAIT 수신 횟수 (WFTmax 보호) */
 
     /* 타임아웃 (RX/TX 독립 추적) */
     uint32_t last_rx_tick;                  /**< 마지막 수신 활동 시간 (ms) */

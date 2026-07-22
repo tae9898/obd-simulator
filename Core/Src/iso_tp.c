@@ -37,7 +37,7 @@ static void process_consecutive_frame(const uint8_t *data, uint8_t dlc);
 static void process_flow_control(const uint8_t *data, uint8_t dlc);
 static void send_single_frame(uint32_t can_id, const uint8_t *data, uint16_t len);
 static void send_first_frame(uint32_t can_id, const uint8_t *data, uint32_t total_len);
-static void send_consecutive_frames(void);
+static void send_next_cf(void);
 static void send_flow_control(uint32_t can_id, uint8_t fs, uint8_t bs, uint8_t stmin);
 static void dispatch_completed_message(void);
 static void abort_stream_rx(void);
@@ -137,6 +137,7 @@ void ISO_TP_SendResponse(uint32_t can_id, const uint8_t *data, uint16_t len)
         s_ctx.tx_sent = 0U;
         s_ctx.tx_seq = 1U;
         s_ctx.tx_can_id = can_id;
+        s_ctx.tx_wait_frame_count = 0U;   /* 새 트랜잭션: WAIT 카운터 리셋 */
         s_ctx.tx_state = ISO_TP_TX_WAIT_FC;
         send_first_frame(can_id, data, (uint32_t)len);
     }
@@ -158,6 +159,15 @@ void ISO_TP_Tick(uint32_t now_ms)
         if ((now_ms - s_ctx.last_tx_tick) >= ISO_TP_TX_FC_TIMEOUT_MS) {
             Debug_Print("[ISO-TP] TX FC timeout\r\n");
             s_ctx.tx_state = ISO_TP_TX_IDLE;
+        }
+    }
+
+    /* CF 페이싱: STmin 경과 후 CF 1개 전송 (TX_SEND_CF 상태).
+     * 기존엔 FC 수신 즉시 while 루프로 CF 를 전부 밀어넣어 tester 가 요구한
+     * STmin 간격을 위반했다. tick 기반으로 1개씩 보내 간격을 준수한다. */
+    if (s_ctx.tx_state == ISO_TP_TX_SEND_CF) {
+        if ((now_ms - s_ctx.last_tx_tick) >= s_ctx.tx_stmin) {
+            send_next_cf();
         }
     }
 }
@@ -390,12 +400,31 @@ static void process_flow_control(const uint8_t *data, uint8_t dlc)
     uint8_t fs = (uint8_t)(data[0] & 0x0FU);  /* Flow Status: byte0 하위 니블 */
 
     if (fs == ISO_TP_FC_CONTINUE) {
-        s_ctx.tx_state = ISO_TP_TX_SEND_CF;
-        s_ctx.last_tx_tick = HAL_GetTick();
-        send_consecutive_frames();
+        /* tester 가 요구한 BS / STmin 을 반영 (ISO 15765-2 FC).
+         * STmin: 0x00-0x7F = ms, 0x80-0xF9 = 100us, 0xFA-0xFF = reserved.
+         * 시뮬레이터는 ms 해상도만 지원 → us/reserved 는 0(최소 간격)으로. */
+        uint8_t stmin = data[2];
+        s_ctx.tx_stmin        = (stmin < 0x80U) ? stmin : 0U;
+        s_ctx.tx_block_size   = data[1];
+        s_ctx.tx_block_counter = 0U;
+        s_ctx.last_tx_tick    = HAL_GetTick();
+        s_ctx.tx_state        = ISO_TP_TX_SEND_CF;
+        /* FC 직후 첫 CF 는 STmin 대기 없이 즉시 전송 (ISO 15765-2). */
+        send_next_cf();
     } else if (fs == ISO_TP_FC_WAIT) {
-        s_ctx.last_tx_tick = HAL_GetTick();
+        /* WFTmax 보호: 무한 WAIT 로 인한 hang 방지. */
+        s_ctx.tx_wait_frame_count++;
+        if ((ISO_TP_MAX_WFT != 0U) &&
+            (s_ctx.tx_wait_frame_count > ISO_TP_MAX_WFT)) {
+            Debug_Print("[ISO-TP] FC.WAIT exceeded WFTmax (%u), abort\r\n",
+                        ISO_TP_MAX_WFT);
+            s_ctx.tx_state = ISO_TP_TX_IDLE;
+        } else {
+            s_ctx.last_tx_tick = HAL_GetTick();  /* FC 타임아웃 리셋 */
+        }
     } else {
+        /* ISO_TP_FC_OVERFLOW (0x02) 또는 알 수 없음 → 송신 중단 */
+        Debug_Print("[ISO-TP] FC overflow/unknown (fs=%u), abort\r\n", fs);
         s_ctx.tx_state = ISO_TP_TX_IDLE;
     }
 }
@@ -492,47 +521,70 @@ static void send_first_frame(uint32_t can_id, const uint8_t *data, uint32_t tota
     }
 }
 
-static void send_consecutive_frames(void)
+/**
+ * @brief  CF 1개 전송 (tick 기반 페이싱)
+ * @note   ISO_TP_Tick() 이 STmin 경과마다 1개씩 호출. 한 번에 1개만 보낸다.
+ *           - BS>0 이고 블록 도달 → TX_WAIT_FC (다음 FC 대기, 흐름제어)
+ *           - 전송 완료           → TX_IDLE
+ *           - 그 외               → TX_SEND_CF 유지 (다음 tick 에서 STmin 후 재전송)
+ */
+static void send_next_cf(void)
 {
-    while (s_ctx.tx_sent < s_ctx.tx_total_size && s_ctx.tx_state == ISO_TP_TX_SEND_CF) {
-        uint8_t frame[ISO_TP_FRAME_SIZE];
-        (void)memset(frame, 0xCCU, sizeof(frame));
-
-        frame[0] = (uint8_t)(ISO_TP_PCI_CONSECUTIVE | (s_ctx.tx_seq & 0x0FU));
-
-        uint32_t remaining = s_ctx.tx_total_size - s_ctx.tx_sent;
-        uint8_t cf_payload = ISO_TP_CF_PAYLOAD_SIZE;   /* 63 */
-        if ((uint32_t)cf_payload > remaining) {
-            cf_payload = (uint8_t)remaining;
-        }
-
-        (void)memcpy(&frame[1], &s_ctx.tx_buffer[s_ctx.tx_sent], cf_payload);
-
-        FDCAN_TxHeaderTypeDef tx_header;
-        tx_header.Identifier          = s_ctx.tx_can_id;
-        tx_header.IdType              = FDCAN_STANDARD_ID;
-        tx_header.TxFrameType         = FDCAN_DATA_FRAME;
-        tx_header.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
-        tx_header.BitRateSwitch       = FDCAN_BRS_ON;
-        tx_header.FDFormat            = FDCAN_FD_CAN;
-        tx_header.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
-        tx_header.MessageMarker       = 0U;
-        tx_header.DataLength          = FDCAN_BytesToDlc((uint8_t)(cf_payload + 1U));
-
-        if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx_header, frame) != HAL_OK) {
-            Debug_Print("[ISO-TP] CF TX failed\r\n");
-            s_ctx.tx_state = ISO_TP_TX_IDLE;
-            return;
-        }
-
-        s_ctx.tx_sent += (uint32_t)cf_payload;
-        s_ctx.tx_seq = (s_ctx.tx_seq + 1U) & 0x0FU;
-    }
-
     if (s_ctx.tx_sent >= s_ctx.tx_total_size) {
         Debug_Print("[ISO-TP] TX complete\r\n");
         s_ctx.tx_state = ISO_TP_TX_IDLE;
+        return;
     }
+
+    uint8_t frame[ISO_TP_FRAME_SIZE];
+    (void)memset(frame, 0xCCU, sizeof(frame));
+
+    frame[0] = (uint8_t)(ISO_TP_PCI_CONSECUTIVE | (s_ctx.tx_seq & 0x0FU));
+
+    uint32_t remaining = s_ctx.tx_total_size - s_ctx.tx_sent;
+    uint8_t cf_payload = ISO_TP_CF_PAYLOAD_SIZE;   /* 63 */
+    if ((uint32_t)cf_payload > remaining) {
+        cf_payload = (uint8_t)remaining;
+    }
+
+    (void)memcpy(&frame[1], &s_ctx.tx_buffer[s_ctx.tx_sent], cf_payload);
+
+    FDCAN_TxHeaderTypeDef tx_header;
+    tx_header.Identifier          = s_ctx.tx_can_id;
+    tx_header.IdType              = FDCAN_STANDARD_ID;
+    tx_header.TxFrameType         = FDCAN_DATA_FRAME;
+    tx_header.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+    tx_header.BitRateSwitch       = FDCAN_BRS_ON;
+    tx_header.FDFormat            = FDCAN_FD_CAN;
+    tx_header.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
+    tx_header.MessageMarker       = 0U;
+    tx_header.DataLength          = FDCAN_BytesToDlc((uint8_t)(cf_payload + 1U));
+
+    if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx_header, frame) != HAL_OK) {
+        Debug_Print("[ISO-TP] CF TX failed\r\n");
+        s_ctx.tx_state = ISO_TP_TX_IDLE;
+        return;
+    }
+
+    s_ctx.tx_sent += (uint32_t)cf_payload;
+    s_ctx.tx_seq = (s_ctx.tx_seq + 1U) & 0x0FU;
+    s_ctx.last_tx_tick = HAL_GetTick();   /* 다음 CF 의 STmin 기준점 */
+    s_ctx.tx_block_counter++;
+
+    /* 전송 완료 */
+    if (s_ctx.tx_sent >= s_ctx.tx_total_size) {
+        Debug_Print("[ISO-TP] TX complete\r\n");
+        s_ctx.tx_state = ISO_TP_TX_IDLE;
+        return;
+    }
+
+    /* BS>0: 블록 도달 시 다음 FC 대기 (흐름제어). BS=0: 무제한 계속. */
+    if ((s_ctx.tx_block_size != 0U) &&
+        (s_ctx.tx_block_counter >= s_ctx.tx_block_size)) {
+        Debug_Print("[ISO-TP] block %u sent, wait FC\r\n", s_ctx.tx_block_counter);
+        s_ctx.tx_state = ISO_TP_TX_WAIT_FC;
+    }
+    /* 아니면 TX_SEND_CF 유지 → ISO_TP_Tick() 이 STmin 후 다음 CF 호출 */
 }
 
 static void send_flow_control(uint32_t can_id, uint8_t fs, uint8_t bs, uint8_t stmin)
