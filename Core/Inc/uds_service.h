@@ -50,7 +50,8 @@ extern "C" {
 #define NRC_REQUEST_OUT_OF_RANGE    0x31U  /**< 범위 초과 */
 #define NRC_SECURITY_ACCESS_DENIED  0x33U  /**< 시큐리티 접근 거부 */
 #define NRC_INVALID_KEY             0x35U  /**< 잘못된 키 */
-#define NRC_EXCEEDED_ATTEMPTS       0x36U  /**< 시도 횟수 초과 */
+#define NRC_EXCEEDED_ATTEMPTS       0x36U  /**< 시도 횟수 초과 (잠금 중) */
+#define NRC_REQUIRED_TIME_DELAY     0x37U  /**< 필수 대기 시간 미경과 (부팅/딜레이) */
 
 /* === ECU Reset 서브기능 === */
 #define UDS_RESET_HARD              0x01U  /**< 하드 리셋 (전체 재시작) */

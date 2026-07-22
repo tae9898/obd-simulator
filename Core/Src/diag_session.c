@@ -17,6 +17,7 @@
 static Diag_Session_t s_session;
 static uint8_t  s_fail_count = 0U;
 static uint32_t s_lockout_start = 0U;
+static uint32_t s_boot_tick = 0U;           /**< 부팅 시각 (boot delay 기준점) */
 
 /* === 내부 함수 === */
 static uint16_t compute_key(uint16_t seed);
@@ -28,6 +29,7 @@ void DiagSession_Init(void)
     s_session.security_level = DIAG_SEC_LOCKED;
     s_session.last_activity_tick = HAL_GetTick();
     s_fail_count = 0U;
+    s_boot_tick = HAL_GetTick();
     Debug_Print("[DIAG] Session manager init OK\r\n");
 }
 
@@ -50,11 +52,6 @@ int DiagSession_SetSession(uint8_t session_type)
 
     Debug_Print("[DIAG] Session: %u -> %u\r\n", prev, session_type);
     return 0;
-}
-
-uint8_t DiagSession_GetSession(void)
-{
-    return s_session.session_type;
 }
 
 /**
@@ -80,42 +77,57 @@ uint16_t DiagSession_GenerateSeed(void)
 }
 
 /**
- * @brief  Key 검증
- * @retval 0: 성공 (언락), -1: 실패
+ * @brief  Key 검증 (사유별 결과 반환)
+ * @retval DIAG_KEY_OK / DIAG_KEY_INVALID / DIAG_KEY_EXCEEDED_ATTEMPTS /
+ *         DIAG_KEY_DELAY_NOT_EXPIRED
  *
- * 시큐리티 절차:
- *   1. 잠금 상태 확인 (3회 실패 후 10초 잠금)
- *   2. Seed 유효성 확인 (fresh 여부)
- *   3. Key = compute_key(seed)와 비교
- *   4. 성공 → 언락, 실패 → 카운터 증가
+ * 시큐리티 절차 (우선순위순):
+ *   1. 부팅 직후 딜레이 미경과 → DELAY_NOT_EXPIRED (NRC 0x37)
+ *   2. 3회 실패 후 잠금 기간   → EXCEEDED_ATTEMPTS   (NRC 0x36)
+ *   3. Seed 미발행             → INVALID             (NRC 0x35)
+ *   4. Key = compute_key(seed) 비교 → OK(언락) / INVALID(카운터++)
+ *
+ * @note   잠금/딜레이 중에는 올바른 키라도 거부한다 (ISO 14229-1).
+ *         이전 구조(int 0/-1)에서는 잠금 중에도 NRC 0x35(InvalidKey) 만 반환해
+ *         공격자에게 "현재 잠겨 있음"이라는 표준 신호(0x36/0x37)를 주지 못했다.
  */
-int DiagSession_VerifyKey(uint16_t key)
+DiagKeyResult_t DiagSession_VerifyKey(uint16_t key)
 {
-    /* 잠금 기간 확인 */
+    /* 1. 부팅 직후 딜레이 — power-on brute-force 완충 (NRC 0x37) */
+    uint32_t since_boot = HAL_GetTick() - s_boot_tick;
+    if (since_boot < DIAG_BOOT_DELAY_MS) {
+        Debug_Print("[DIAG] Boot delay (%lu ms left)\r\n",
+                    (unsigned long)(DIAG_BOOT_DELAY_MS - since_boot));
+        return DIAG_KEY_DELAY_NOT_EXPIRED;
+    }
+
+    /* 2. 시도 초과 잠금 — 올바른 키여도 잠금 기간엔 거부 (NRC 0x36) */
     if (s_fail_count >= DIAG_MAX_FAIL_ATTEMPTS) {
         uint32_t elapsed = HAL_GetTick() - s_lockout_start;
         if (elapsed < DIAG_LOCKOUT_TIME_MS) {
             Debug_Print("[DIAG] Locked out (%lu ms left)\r\n",
                         (unsigned long)(DIAG_LOCKOUT_TIME_MS - elapsed));
-            return -1;
+            return DIAG_KEY_EXCEEDED_ATTEMPTS;
         }
         s_fail_count = 0U;
     }
 
+    /* 3. Seed 유효성 */
     if (!s_session.seed_is_fresh) {
         Debug_Print("[DIAG] Seed not fresh\r\n");
-        return -1;
+        return DIAG_KEY_INVALID;
     }
 
     uint16_t expected = compute_key(s_session.seed);
     s_session.seed_is_fresh = 0U;  /* seed는 한 번만 사용 */
 
+    /* 4. 비교 → 성공(언락) / 실패(카운터++) */
     if (key == expected) {
         s_session.security_level = DIAG_SEC_LEVEL1;
         s_fail_count = 0U;
         s_session.last_activity_tick = HAL_GetTick();
         Debug_Print("[DIAG] Security unlocked\r\n");
-        return 0;
+        return DIAG_KEY_OK;
     }
 
     s_fail_count++;
@@ -127,12 +139,7 @@ int DiagSession_VerifyKey(uint16_t key)
         Debug_Print("[DIAG] Lockout for %us\r\n", DIAG_LOCKOUT_TIME_MS / 1000U);
     }
 
-    return -1;
-}
-
-uint8_t DiagSession_GetSecurityLevel(void)
-{
-    return s_session.security_level;
+    return DIAG_KEY_INVALID;
 }
 
 void DiagSession_ResetS3Timeout(void)
@@ -175,11 +182,6 @@ int DiagSession_CheckAccess(uint8_t sid)
         }
     }
     return 0;
-}
-
-Diag_Session_t *DiagSession_GetContext(void)
-{
-    return &s_session;
 }
 
 /**

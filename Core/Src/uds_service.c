@@ -327,14 +327,31 @@ static void handle_security_access(const uint8_t *req, uint16_t req_len,
 
         uint16_t key = (uint16_t)((uint16_t)req[2] << 8U) | (uint16_t)req[3];
 
-        if (DiagSession_VerifyKey(key) == 0) {
-            resp[0] = UDS_SID_SECURITY_ACCESS + UDS_RESPONSE_SID_OFFSET;
-            resp[1] = level;
-            *resp_len = 2U;
-            Debug_Print("[UDS] Unlocked\r\n");
-        } else {
-            build_negative_response(UDS_SID_SECURITY_ACCESS, NRC_INVALID_KEY,
-                                   resp, resp_len);
+        /* 검증 사유에 따라 ISO 14229-1 표준 NRC 선택:
+         *   OK           → 긍정 응답 (0x67)
+         *   INVALID      → 0x35 InvalidKey
+         *   EXCEEDED     → 0x36 ExceededNumberOfAttempts (잠금 중)
+         *   DELAY        → 0x37 RequiredTimeDelayNotExpired (부팅/딜레이) */
+        switch (DiagSession_VerifyKey(key)) {
+            case DIAG_KEY_OK:
+                resp[0] = UDS_SID_SECURITY_ACCESS + UDS_RESPONSE_SID_OFFSET;
+                resp[1] = level;
+                *resp_len = 2U;
+                Debug_Print("[UDS] Unlocked\r\n");
+                break;
+            case DIAG_KEY_EXCEEDED_ATTEMPTS:
+                build_negative_response(UDS_SID_SECURITY_ACCESS, NRC_EXCEEDED_ATTEMPTS,
+                                       resp, resp_len);
+                break;
+            case DIAG_KEY_DELAY_NOT_EXPIRED:
+                build_negative_response(UDS_SID_SECURITY_ACCESS, NRC_REQUIRED_TIME_DELAY,
+                                       resp, resp_len);
+                break;
+            case DIAG_KEY_INVALID:
+            default:
+                build_negative_response(UDS_SID_SECURITY_ACCESS, NRC_INVALID_KEY,
+                                       resp, resp_len);
+                break;
         }
     }
 }

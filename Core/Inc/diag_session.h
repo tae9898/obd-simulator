@@ -42,6 +42,24 @@ extern "C" {
 /* === Seed-Key 시뮬레이션 === */
 #define DIAG_SEED_XOR_MASK         0x5A3CU
 
+/* === SecurityAccess brute-force 완충 === */
+/**
+ * 부팅 직후 짧은 시간 동안 0x27 (sendKey) 검증을 거부한다 (NRC 0x37).
+ * power-on 직후 무차별 대입을 막는 최소 완충. iso14229 참조.
+ */
+#define DIAG_BOOT_DELAY_MS         1000U
+
+/* === Key 검증 결과 — 핸들러가 NRC 를 선택하기 위해 사유를 구분 ===
+ * 기존 int (0/-1) 반환에서 확장: 잠금 중이거나 딜레이 미경과일 때
+ * 단순 "잘못된 키"가 아닌 ISO 14229-1 표준 NRC(0x36/0x37)를 응답하기 위함.
+ */
+typedef enum {
+    DIAG_KEY_OK = 0,              /**< 성공 (언락) */
+    DIAG_KEY_INVALID,            /**< 키 불일치 / seed 미발행 → NRC 0x35 */
+    DIAG_KEY_EXCEEDED_ATTEMPTS,  /**< 시도 초과 / 잠금 중 → NRC 0x36 */
+    DIAG_KEY_DELAY_NOT_EXPIRED   /**< 부팅/딜레이 미경과 → NRC 0x37 */
+} DiagKeyResult_t;
+
 /* === 세션 제어 블록 === */
 typedef struct {
     uint8_t  session_type;          /**< 현재 세션 타입 */
@@ -55,11 +73,18 @@ typedef struct {
 
 void DiagSession_Init(void);
 int  DiagSession_SetSession(uint8_t session_type);
-uint8_t DiagSession_GetSession(void);
 
 uint16_t DiagSession_GenerateSeed(void);
-int  DiagSession_VerifyKey(uint16_t key);
-uint8_t DiagSession_GetSecurityLevel(void);
+
+/**
+ * @brief  Key 검증 (사유별 결과 반환)
+ * @retval DIAG_KEY_OK / DIAG_KEY_INVALID / DIAG_KEY_EXCEEDED_ATTEMPTS /
+ *         DIAG_KEY_DELAY_NOT_EXPIRED
+ * @note   핸들러는 반환값에 따라 NRC 0x00(긍정)/0x35/0x36/0x37 를 선택한다.
+ *         부팅 후 DIAG_BOOT_DELAY_MS 이내거나, 3회 실패 후 잠금 기간이면
+ *         키 내용과 무관하게 EXCEEDED/DELAY 를 반환한다.
+ */
+DiagKeyResult_t DiagSession_VerifyKey(uint16_t key);
 
 void DiagSession_ResetS3Timeout(void);
 void DiagSession_Tick(uint32_t now_ms);
@@ -70,8 +95,6 @@ void DiagSession_Tick(uint32_t now_ms);
  * @note   SID 0x31은 Extended + Security Unlock 필요
  */
 int  DiagSession_CheckAccess(uint8_t sid);
-
-Diag_Session_t *DiagSession_GetContext(void);
 
 #ifdef __cplusplus
 }
