@@ -222,3 +222,115 @@ uint8_t OBD2_GetVehicleSpeed(uint8_t *pTxData, uint8_t speed)
 
     return 3U;
 }
+
+/* ====================================================
+ * DTC (Diagnostic Trouble Code) Fault Manager
+ * ==================================================== */
+
+DtcEntry_t g_dtc_table[OBD2_DTC_COUNT] = {
+    { DTC_ENGINE_OVERTEMP,    DTC_STATE_INACTIVE, 0U, 0U },
+    { DTC_VSS_MALFUNCTION,    DTC_STATE_INACTIVE, 0U, 0U },
+    { DTC_COOLANT_THERMOSTAT, DTC_STATE_INACTIVE, 0U, 0U },
+};
+
+/**
+ * @brief  시뮬 값으로 DTC 상태머신 갱신 (10ms 주기)
+ * @note   fault 조건 연속 감지(debounce) → PENDING → (지속) → CONFIRMED.
+ *         조건 해제 시 PENDING 은 INACTIVE 로 회수; CONFIRMED 는 clear 전까지 유지.
+ */
+void OBD2_DtcUpdate(const OBD2_SimState_t *st)
+{
+    if (st == NULL) {
+        return;
+    }
+
+    for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
+        DtcEntry_t *d = &g_dtc_table[i];
+        uint8_t cond = 0U;
+
+        switch (d->code) {
+            case DTC_ENGINE_OVERTEMP:
+                /* 냉각수 과온: coolant 가 MAX(105) 에 도달 */
+                cond = (st->coolant_temp >= COOLANT_TEMP_MAX) ? 1U : 0U;
+                break;
+            case DTC_VSS_MALFUNCTION:
+                /* 차속 센서 불일치: 정지(0km/h)인데 고RPM(>2500) */
+                cond = ((st->vehicle_speed == VEHICLE_SPEED_MIN) &&
+                        (st->engine_rpm > 2500U)) ? 1U : 0U;
+                break;
+            case DTC_COOLANT_THERMOSTAT:
+                /* 과냉/워밍업 미완료: coolant 가 MIN(80) 이하 */
+                cond = (st->coolant_temp <= COOLANT_TEMP_MIN) ? 1U : 0U;
+                break;
+            default:
+                break;
+        }
+
+        if (cond != 0U) {
+            if (d->debounce < 0xFFU) {
+                d->debounce++;
+            }
+            if (d->state == DTC_STATE_INACTIVE &&
+                d->debounce >= OBD2_DTC_DEBOUNCE_THRESH) {
+                d->state = DTC_STATE_PENDING;
+                d->hold = 0U;
+            }
+            if (d->state == DTC_STATE_PENDING) {
+                if (d->hold < 0xFFU) {
+                    d->hold++;
+                }
+                if (d->hold >= OBD2_DTC_CONFIRM_HOLD) {
+                    d->state = DTC_STATE_CONFIRMED;
+                }
+            }
+        } else {
+            d->debounce = 0U;
+            /* 조건 해제: PENDING 은 회수, CONFIRMED 는 clear 필요 */
+            if (d->state == DTC_STATE_PENDING) {
+                d->state = DTC_STATE_INACTIVE;
+                d->hold = 0U;
+            }
+        }
+    }
+}
+
+uint8_t OBD2_DtcGetConfirmed(uint8_t *out, uint8_t max_pairs)
+{
+    uint8_t n = 0U;
+    if (out == NULL) {
+        return 0U;
+    }
+    for (uint8_t i = 0U; (i < OBD2_DTC_COUNT) && (n < max_pairs); i++) {
+        if (g_dtc_table[i].state == DTC_STATE_CONFIRMED) {
+            out[(uint8_t)(n * 2U)]      = (uint8_t)(g_dtc_table[i].code >> 8U);
+            out[(uint8_t)(n * 2U + 1U)] = (uint8_t)(g_dtc_table[i].code & 0xFFU);
+            n++;
+        }
+    }
+    return n;
+}
+
+uint8_t OBD2_DtcGetPending(uint8_t *out, uint8_t max_pairs)
+{
+    uint8_t n = 0U;
+    if (out == NULL) {
+        return 0U;
+    }
+    for (uint8_t i = 0U; (i < OBD2_DTC_COUNT) && (n < max_pairs); i++) {
+        if (g_dtc_table[i].state == DTC_STATE_PENDING) {
+            out[(uint8_t)(n * 2U)]      = (uint8_t)(g_dtc_table[i].code >> 8U);
+            out[(uint8_t)(n * 2U + 1U)] = (uint8_t)(g_dtc_table[i].code & 0xFFU);
+            n++;
+        }
+    }
+    return n;
+}
+
+void OBD2_DtcClear(void)
+{
+    for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
+        g_dtc_table[i].state = DTC_STATE_INACTIVE;
+        g_dtc_table[i].debounce = 0U;
+        g_dtc_table[i].hold = 0U;
+    }
+}

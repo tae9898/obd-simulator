@@ -364,6 +364,9 @@ static void vMainTask(void *pvParameters)
         /* --- 시뮬레이션 값 업데이트 (10ms 주기) --- */
         OBD2_UpdateSimValues(&g_sim_state);
 
+        /* --- DTC 상태머신 갱신 (시뮬 값 기반 fault 감지) --- */
+        OBD2_DtcUpdate(&g_sim_state);
+
         /* --- ISO-TP 타임아웃 처리 --- */
         ISO_TP_Tick(xTaskGetTickCount() * portTICK_PERIOD_MS);
 

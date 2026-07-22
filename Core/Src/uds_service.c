@@ -368,6 +368,11 @@ static void handle_routine_control(const uint8_t *req, uint16_t req_len,
         return;
     }
 
+    /* RoutineControl 0x0201 (DTC Clear) start: FaultManager 리셋 */
+    if (routine_id == 0x0201U && sub == UDS_ROUTINE_START) {
+        OBD2_DtcClear();
+    }
+
     resp[0] = UDS_SID_ROUTINE_CONTROL + UDS_RESPONSE_SID_OFFSET;
     resp[1] = sub;
     resp[2] = (uint8_t)(routine_id >> 8U);
@@ -420,10 +425,17 @@ static void handle_obd2_service03(const uint8_t *req, uint16_t req_len,
 {
     (void)req;
     (void)req_len;
-    /* 요청은 [0x03] 만. 응답: [0x43, 0x00] (DTC 0개) */
+    /* ISO 15031-5: [0x43, numDTC, (DTC_hi, DTC_lo)...]
+     * CONFIRMED DTC 목록 반환 (FaultManager). */
     resp[0] = UDS_SID_OBD2_STORED_DTC + UDS_RESPONSE_SID_OFFSET;  /* 0x43 */
-    resp[1] = 0x00U;  /* 상위 니블=포맷(0), 하위 니블=DTC 개수(0) */
-    *resp_len = 2U;
+    uint8_t dtc_buf[OBD2_DTC_COUNT * 2U];
+    uint8_t n = OBD2_DtcGetConfirmed(dtc_buf, OBD2_DTC_COUNT);
+    resp[1] = n;  /* numDTC */
+    for (uint8_t i = 0U; i < n; i++) {
+        resp[(uint16_t)(2U + i * 2U)]      = dtc_buf[i * 2U];
+        resp[(uint16_t)(3U + i * 2U)]      = dtc_buf[(uint8_t)(i * 2U + 1U)];
+    }
+    *resp_len = (uint16_t)(2U + (uint16_t)n * 2U);
 }
 
 /**
@@ -435,6 +447,7 @@ static void handle_obd2_service04(const uint8_t *req, uint16_t req_len,
 {
     (void)req;
     (void)req_len;
+    OBD2_DtcClear();  /* 모든 DTC 리셋 (stored + pending) */
     resp[0] = UDS_SID_OBD2_CLEAR_DTC + UDS_RESPONSE_SID_OFFSET;  /* 0x44 */
     *resp_len = 1U;
 }
@@ -449,8 +462,16 @@ static void handle_obd2_service07(const uint8_t *req, uint16_t req_len,
 {
     (void)req;
     (void)req_len;
+    /* ISO 15031-5: [0x47, (DTC_hi, DTC_lo)...] — numDTC 바이트 없음.
+     * PENDING DTC 목록 반환 (FaultManager). */
     resp[0] = UDS_SID_OBD2_PENDING_DTC + UDS_RESPONSE_SID_OFFSET;  /* 0x47 */
-    *resp_len = 1U;
+    uint8_t dtc_buf[OBD2_DTC_COUNT * 2U];
+    uint8_t n = OBD2_DtcGetPending(dtc_buf, OBD2_DTC_COUNT);
+    for (uint8_t i = 0U; i < n; i++) {
+        resp[(uint16_t)(1U + i * 2U)]      = dtc_buf[i * 2U];
+        resp[(uint16_t)(2U + i * 2U)]      = dtc_buf[(uint8_t)(i * 2U + 1U)];
+    }
+    *resp_len = (uint16_t)(1U + (uint16_t)n * 2U);
 }
 
 /**

@@ -44,6 +44,39 @@ typedef struct {
     uint8_t  speed_direction;
 } OBD2_SimState_t;
 
+/* === DTC (Diagnostic Trouble Code) 시스템 ===
+ * Mode 03(stored)/07(pending) 가 항상 빈 응답(numDTC=0)을 반환하던 한계 해소.
+ * OBD2_DtcUpdate() 가 시뮬 값으로 fault 를 감지해 상태머신 갱신:
+ *   INACTIVE → (debounce) → PENDING → (지속) → CONFIRMED
+ *   - Mode 03 : CONFIRMED DTC 노출
+ *   - Mode 07 : PENDING  DTC 노출
+ *   - Mode 04 / RoutineControl 0x0201 : OBD2_DtcClear() 로 리셋
+ * 조건 해제 시 PENDING 은 INACTIVE 로 회수되지만 CONFIRMED 는 clear 전까지 유지.
+ */
+typedef enum {
+    DTC_STATE_INACTIVE = 0,
+    DTC_STATE_PENDING,    /* Mode 07 (pending) 에 노출 */
+    DTC_STATE_CONFIRMED   /* Mode 03 (stored)  에 노출 */
+} DtcState_t;
+
+typedef struct {
+    uint16_t   code;            /* SAE J2010 DTC (P0217 → 0x0217) */
+    DtcState_t state;
+    uint8_t    debounce;        /* 조건 연속 감지 카운터 */
+    uint8_t    hold;            /* PENDING 유지 카운터 (→ CONFIRMED) */
+} DtcEntry_t;
+
+#define OBD2_DTC_COUNT            3U
+#define OBD2_DTC_DEBOUNCE_THRESH  5U    /* 5회(=50ms) 연속 감지 시 PENDING 승격 */
+#define OBD2_DTC_CONFIRM_HOLD     50U   /* 50회(=500ms) PENDING 유지 시 CONFIRMED */
+
+/* 감지 대상 DTC (SAE J2010 2바이트 인코딩) */
+#define DTC_ENGINE_OVERTEMP       0x0217U  /* P0217: 냉각수 과온 (coolant >= MAX) */
+#define DTC_VSS_MALFUNCTION       0x0500U  /* P0500: 차속=0 인데 고RPM */
+#define DTC_COOLANT_THERMOSTAT    0x0128U  /* P0128: 냉각수 과냉 (워밍업 미완료) */
+
+extern DtcEntry_t g_dtc_table[OBD2_DTC_COUNT];
+
 /* === 순수 로직 API (CAN I/O 없음) === */
 
 /**
@@ -95,6 +128,27 @@ uint8_t OBD2_GetEngineRPM(uint8_t *pTxData, uint16_t rpm);
  * @retval 응답 데이터 길이 (DLC)
  */
 uint8_t OBD2_GetVehicleSpeed(uint8_t *pTxData, uint8_t speed);
+
+/* === DTC (Fault) 관리 API === */
+
+/**
+ * @brief  시뮬 값으로 DTC 상태머신 갱신 (10ms 주기 호출)
+ * @note   main 루프에서 OBD2_UpdateSimValues() 직후에 호출.
+ *         fault 조건 연속 감지(debounce) → PENDING → (지속) → CONFIRMED.
+ */
+void OBD2_DtcUpdate(const OBD2_SimState_t *st);
+
+/**
+ * @brief  DTC 코드를 버퍼에 순차 기록 (2바이트/DTC, big-endian)
+ * @param  out:       출력 버퍼 (최소 max_pairs*2 바이트)
+ * @param  max_pairs: 기록할 최대 DTC 수
+ * @retval 실제 기록한 DTC 수
+ */
+uint8_t OBD2_DtcGetConfirmed(uint8_t *out, uint8_t max_pairs);
+uint8_t OBD2_DtcGetPending(uint8_t *out, uint8_t max_pairs);
+
+/** 모든 DTC 를 INACTIVE 로 리셋 (Mode 04 / RoutineControl 0x0201) */
+void OBD2_DtcClear(void);
 
 /* === 전역 시뮬레이션 상태 === */
 extern OBD2_SimState_t g_sim_state;
