@@ -5,6 +5,7 @@
  */
 
 #include "obd2_simulator.h"
+#include "task.h"            /* taskENTER/EXIT_CRITICAL (DTC 테이블 크로스태스크 보호) */
 #include <string.h>
 
 /* === 시뮬레이션 상태 전역 변수 (정의는 main.c에 있음) === */
@@ -244,6 +245,9 @@ void OBD2_DtcUpdate(const OBD2_SimState_t *st)
         return;
     }
 
+    /* DTC 테이블을 vCanRxTask(Get/Clear) 와 공유 → 임계구역으로 보호 (H1).
+     * Mode 04(clear) 도착 중에 update 가 항목을 덮어쓰는 경쟁을 막는다. */
+    taskENTER_CRITICAL();
     for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
         DtcEntry_t *d = &g_dtc_table[i];
         uint8_t cond = 0U;
@@ -292,6 +296,7 @@ void OBD2_DtcUpdate(const OBD2_SimState_t *st)
             }
         }
     }
+    taskEXIT_CRITICAL();
 }
 
 uint8_t OBD2_DtcGetConfirmed(uint8_t *out, uint8_t max_pairs)
@@ -300,6 +305,7 @@ uint8_t OBD2_DtcGetConfirmed(uint8_t *out, uint8_t max_pairs)
     if (out == NULL) {
         return 0U;
     }
+    taskENTER_CRITICAL();
     for (uint8_t i = 0U; (i < OBD2_DTC_COUNT) && (n < max_pairs); i++) {
         if (g_dtc_table[i].state == DTC_STATE_CONFIRMED) {
             out[(uint8_t)(n * 2U)]      = (uint8_t)(g_dtc_table[i].code >> 8U);
@@ -307,6 +313,7 @@ uint8_t OBD2_DtcGetConfirmed(uint8_t *out, uint8_t max_pairs)
             n++;
         }
     }
+    taskEXIT_CRITICAL();
     return n;
 }
 
@@ -316,6 +323,7 @@ uint8_t OBD2_DtcGetPending(uint8_t *out, uint8_t max_pairs)
     if (out == NULL) {
         return 0U;
     }
+    taskENTER_CRITICAL();
     for (uint8_t i = 0U; (i < OBD2_DTC_COUNT) && (n < max_pairs); i++) {
         if (g_dtc_table[i].state == DTC_STATE_PENDING) {
             out[(uint8_t)(n * 2U)]      = (uint8_t)(g_dtc_table[i].code >> 8U);
@@ -323,14 +331,17 @@ uint8_t OBD2_DtcGetPending(uint8_t *out, uint8_t max_pairs)
             n++;
         }
     }
+    taskEXIT_CRITICAL();
     return n;
 }
 
 void OBD2_DtcClear(void)
 {
+    taskENTER_CRITICAL();
     for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
         g_dtc_table[i].state = DTC_STATE_INACTIVE;
         g_dtc_table[i].debounce = 0U;
         g_dtc_table[i].hold = 0U;
     }
+    taskEXIT_CRITICAL();
 }
