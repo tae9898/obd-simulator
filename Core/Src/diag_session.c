@@ -29,8 +29,15 @@ void DiagSession_Init(void)
     s_session.security_level = DIAG_SEC_LOCKED;
     s_session.last_activity_tick = HAL_GetTick();
     s_fail_count = 0U;
-    s_boot_tick = HAL_GetTick();
+    /* s_boot_tick 은 MarkBootReady() 에서 설정 (통신 준비 시점).
+     * 여기서 설정하면 scheduler 시작 전이라 boot delay 가 무의미해진다. */
     Debug_Print("[DIAG] Session manager init OK\r\n");
+}
+
+void DiagSession_MarkBootReady(void)
+{
+    s_boot_tick = HAL_GetTick();
+    Debug_Print("[DIAG] Boot ready — security boot-delay armed\r\n");
 }
 
 int DiagSession_SetSession(uint8_t session_type)

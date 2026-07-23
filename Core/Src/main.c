@@ -225,6 +225,9 @@ int main(void)
         }
     }
 
+    /* --- 진단 통신 준비 완료: SecurityAccess boot-delay 기준점 (M1 수정) --- */
+    DiagSession_MarkBootReady();
+
     /* --- IWDG 초기화 (독립 워치독, multitask 감시) ---
      * 모든 태스크(MAIN/CAN_RX/RS485)가 alive 플래그를 세트할 때만 refresh.
      * 하나라도 멈추면 ~2초 내 리셋. HAL_IWDG_Init 전에 LSI(내부 32kHz) 활성화 필수. */

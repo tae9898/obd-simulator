@@ -72,6 +72,15 @@ typedef struct {
 /* === API === */
 
 void DiagSession_Init(void);
+
+/**
+ * @brief  통신 준비 완료 시점을 SecurityAccess boot-delay 기준점으로 설정
+ * @note   DiagSession_Init() 은 scheduler 시작 전(클럭/GPIO/FDCAN 초기화 이전)이라
+ *         너무 빠름 — 실제 부팅이 1초를 넘으면 boot delay 가 이미 만료되어 무의미.
+ *         FDCAN 시작 등 진단 통신 준비가 끝난 시점(main) 에서 호출해야 의미가 있음.
+ */
+void DiagSession_MarkBootReady(void);
+
 int  DiagSession_SetSession(uint8_t session_type);
 
 uint16_t DiagSession_GenerateSeed(void);
