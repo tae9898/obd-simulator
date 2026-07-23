@@ -20,6 +20,7 @@
 #include "uds_service.h"
 #include "fdcan_config.h"
 #include "uart_debug.h"
+#include "task.h"            /* taskENTER/EXIT_CRITICAL (TX 상태 크로스태스크 보호) */
 #include <string.h>
 
 /* === 타임아웃 === */
@@ -132,6 +133,9 @@ void ISO_TP_SendResponse(uint32_t can_id, const uint8_t *data, uint16_t len)
             return;
         }
 
+        /* 멀티프레임 송신 시작: TX 상태 설정을 원자적으로 (H2).
+         * send_first_frame 의 FDCAN TX(긴 작업)는 critical 밖에서. */
+        taskENTER_CRITICAL();
         (void)memcpy(s_ctx.tx_buffer, data, len);
         s_ctx.tx_total_size = (uint32_t)len;
         s_ctx.tx_sent = 0U;
@@ -139,12 +143,20 @@ void ISO_TP_SendResponse(uint32_t can_id, const uint8_t *data, uint16_t len)
         s_ctx.tx_can_id = can_id;
         s_ctx.tx_wait_frame_count = 0U;   /* 새 트랜잭션: WAIT 카운터 리셋 */
         s_ctx.tx_state = ISO_TP_TX_WAIT_FC;
+        taskEXIT_CRITICAL();
         send_first_frame(can_id, data, (uint32_t)len);
     }
 }
 
 void ISO_TP_Tick(uint32_t now_ms)
 {
+    /* TX 상태머신이 vCanRxTask(FC 수신/첫 CF) 와 공유된다 (H2).
+     * 여기(vMainTask) 가 상태를 읽→판단→전환(또는 CF 송신) 하는 동안
+     * vCanRxTask 가 선점해 tx_state 를 바꾸면, 재개 후 stale 상태로 IDLE 을
+     * 덮어쓰는 경쟁이 생긴다. 읽기-판단-전환을 한 임계구역으로 묶는다.
+     * critical section 은 짧다(send_next_cf 의 FDCAN 큐 적재는 non-blocking). */
+    taskENTER_CRITICAL();
+
     /* CF 수신 타임아웃 (RX 상태만 검사 — 송신과 독립) */
     if (s_ctx.rx_state == ISO_TP_RX_WAIT_CF) {
         if ((now_ms - s_ctx.last_rx_tick) >= ISO_TP_RX_TIMEOUT_MS) {
@@ -162,14 +174,14 @@ void ISO_TP_Tick(uint32_t now_ms)
         }
     }
 
-    /* CF 페이싱: STmin 경과 후 CF 1개 전송 (TX_SEND_CF 상태).
-     * 기존엔 FC 수신 즉시 while 루프로 CF 를 전부 밀어넣어 tester 가 요구한
-     * STmin 간격을 위반했다. tick 기반으로 1개씩 보내 간격을 준수한다. */
+    /* CF 페이싱: STmin 경과 후 CF 1개 전송 (TX_SEND_CF 상태). */
     if (s_ctx.tx_state == ISO_TP_TX_SEND_CF) {
         if ((now_ms - s_ctx.last_tx_tick) >= s_ctx.tx_stmin) {
             send_next_cf();
         }
     }
+
+    taskEXIT_CRITICAL();
 }
 
 /* ====================================================
@@ -393,7 +405,10 @@ static void process_flow_control(const uint8_t *data, uint8_t dlc)
 {
     (void)dlc;
 
+    /* TX 상태를 읽고 바꾸는 구간을 원자적으로 (H2: ISO_TP_Tick 과 경쟁). */
+    taskENTER_CRITICAL();
     if (s_ctx.tx_state != ISO_TP_TX_WAIT_FC) {
+        taskEXIT_CRITICAL();
         return;
     }
 
@@ -427,6 +442,7 @@ static void process_flow_control(const uint8_t *data, uint8_t dlc)
         Debug_Print("[ISO-TP] FC overflow/unknown (fs=%u), abort\r\n", fs);
         s_ctx.tx_state = ISO_TP_TX_IDLE;
     }
+    taskEXIT_CRITICAL();
 }
 
 /* ====================================================
