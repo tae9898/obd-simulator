@@ -5,14 +5,14 @@
  *
  * 핵심 설정 설명:
  *   - configTICK_RATE_HZ = 1000: 1ms 틱 (RTOS 스케줄링 최소 단위)
- *   - configTOTAL_HEAP_SIZE = 8192: FreeRTOS 동적 할당 힙 (태스크 TCB + 스택 + 큐)
+ *   - configTOTAL_HEAP_SIZE = 16384: FreeRTOS 동적 할당 힙 (태스크 TCB + 스택 + 큐)
  *   - configCHECK_FOR_STACK_OVERFLOW = 2: 스택 오버플로우 감지 (canary + 포인터 검사)
  *   - configMAX_SYSCALL_INTERRUPT_PRIORITY = 5: ISR에서 FreeRTOS API 호출 가능한 최고 우선순위
  *     (FDCAN ISR은 우선순위 6 이하로 설정해야 xQueueSendFromISR 호출 가능)
  *
  * RAM 예산 (32KB 중):
  *   - Phase 1 기존 사용: ~3.2KB
- *   - FreeRTOS 힙: 8KB (태스크 3개 + 큐 + 스택)
+ *   - FreeRTOS 힙: 16KB (태스크 3개 + 큐 + 스택)
  *   - 남은 여유: ~20KB (Phase 3 추가용)
  */
 
