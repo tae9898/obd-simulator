@@ -74,6 +74,14 @@ extern "C" {
 /* === 최대 응답 크기 === */
 #define UDS_MAX_RESPONSE_SIZE       64U
 
+/* === P2/P2* 서버 타이밍 (ISO 14229-1, DiagnosticSessionControl 응답용) ===
+ * P2  : 요청 수신 → 응답 송신까지의 최대 지연 (ms, 1ms 해상도)
+ * P2* : NRC 0x78(ResponsePending) 이후의 연장 지연 (ms; 응답 필드는 10ms 해상도)
+ * 시뮬레이터는 즉시 응답하므로 P2=50ms 충분 준수. P2*는 0x78 미구현이라 참고값.
+ */
+#define UDS_P2_SERVER_MAX_MS        50U     /* P2  → 0x0032 (1ms 해상도) */
+#define UDS_P2_STAR_SERVER_MAX_MS   5000U   /* P2* → 0x01F4 (5000ms/10, 10ms 해상도) */
+
 /* === API === */
 
 void UDS_Init(void);

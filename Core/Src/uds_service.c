@@ -198,14 +198,23 @@ static void handle_session_control(const uint8_t *req, uint16_t req_len,
         return;
     }
 
-    /* 응답: SID+0x40, sub, P2* 타임아웃 (5000ms = 0x1388) */
+    /* ISO 14229-1 DiagnosticSessionControl 긍정 응답 (6바이트):
+     *   [0x50, sub, P2_H, P2_L, P2*_H, P2*_L]
+     *   P2  = 서버 응답 최대 지연 (1ms 해상도)
+     *   P2* = ResponsePending(0x78) 후 연장 지연 (10ms 해상도)
+     * 이전엔 P2* 하나만 1ms 해상도로(0x1388) 잘못 넣었음 — 표준 위반. */
+    uint16_t p2  = UDS_P2_SERVER_MAX_MS;             /* 50ms  → 0x0032 */
+    uint16_t p2s = UDS_P2_STAR_SERVER_MAX_MS / 10U;  /* 5000/10 → 0x01F4 */
     resp[0] = UDS_SID_DIAG_SESSION_CTRL + UDS_RESPONSE_SID_OFFSET;
     resp[1] = sub;
-    resp[2] = 0x13U;
-    resp[3] = 0x88U;
-    *resp_len = 4U;
+    resp[2] = (uint8_t)(p2  >> 8U);
+    resp[3] = (uint8_t)(p2  & 0xFFU);
+    resp[4] = (uint8_t)(p2s >> 8U);
+    resp[5] = (uint8_t)(p2s & 0xFFU);
+    *resp_len = 6U;
 
-    Debug_Print("[UDS] Session -> 0x%02X\r\n", sub);
+    Debug_Print("[UDS] Session -> 0x%02X (P2=%ums P2*=%ums)\r\n",
+                sub, UDS_P2_SERVER_MAX_MS, UDS_P2_STAR_SERVER_MAX_MS);
 }
 
 /**
