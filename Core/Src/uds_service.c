@@ -40,6 +40,8 @@ static void handle_security_access(const uint8_t *req, uint16_t req_len,
                                    uint8_t *resp, uint16_t *resp_len);
 static void handle_routine_control(const uint8_t *req, uint16_t req_len,
                                    uint8_t *resp, uint16_t *resp_len);
+static void handle_tester_present(const uint8_t *req, uint16_t req_len,
+                                  uint8_t *resp, uint16_t *resp_len);
 static void handle_obd2_service01(const uint8_t *req, uint16_t req_len,
                                   uint8_t *resp, uint16_t *resp_len);
 static void handle_obd2_service03(const uint8_t *req, uint16_t req_len,
@@ -76,6 +78,8 @@ uint8_t UDS_IsFunctionallyAddressable(uint8_t sid)
         case UDS_SID_OBD2_CLEAR_DTC:      /* 0x04 */
         case UDS_SID_OBD2_PENDING_DTC:    /* 0x07 */
         case UDS_SID_OBD2_VEHICLE_INFO:   /* 0x09 */
+            return 1U;
+        case UDS_SID_TESTER_PRESENT:      /* 0x3E keep-alive, functional 도 허용 */
             return 1U;
         default:
             return 0U;
@@ -149,6 +153,10 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
             } else {
                 handle_routine_control(request, request_len, response, response_len);
             }
+            break;
+
+        case UDS_SID_TESTER_PRESENT:
+            handle_tester_present(request, request_len, response, response_len);
             break;
 
         default:
@@ -397,6 +405,43 @@ static void handle_routine_control(const uint8_t *req, uint16_t req_len,
     *resp_len = 4U;
 
     Debug_Print("[UDS] Routine 0x%04X sub=%u\r\n", routine_id, sub);
+}
+
+/**
+ * @brief  SID 0x3E: TesterPresent
+ * @note   진단기의 keep-alive 신호. 수신 = S3 타임아웃 리셋.
+ *         (S3 리셋 자체는 dispatch 진입 시점에 이미 수행됨 — 모든 요청 공통)
+ *         subfunc 0x00 = 긍정 응답 [0x7E, 0x00]
+ *         subfunc 0x80 = 응답 억제 (suppressPosRspMsgIndicationBit, bit7)
+ *         그 외 subfunc = NRC 0x12 (subFunctionNotSupported)
+ */
+static void handle_tester_present(const uint8_t *req, uint16_t req_len,
+                                  uint8_t *resp, uint16_t *resp_len)
+{
+    if (req_len < 2U) {
+        build_negative_response(UDS_SID_TESTER_PRESENT, NRC_INCORRECT_MSG_LEN,
+                               resp, resp_len);
+        return;
+    }
+
+    uint8_t sub = req[1];
+    uint8_t sub_no_suppress = (uint8_t)(sub & 0x7FU);
+
+    /* 유효 subfunc: 0x00 또는 0x80 (bit7 = 응답 억제) */
+    if (sub_no_suppress != 0x00U) {
+        build_negative_response(UDS_SID_TESTER_PRESENT, NRC_SUB_FUNC_NOT_SUPPORTED,
+                               resp, resp_len);
+        return;
+    }
+
+    if ((sub & 0x80U) != 0U) {
+        /* suppressPosRspMsgIndicationBit → 응답 없음 (keep-alive 만 목적) */
+        *resp_len = 0U;
+    } else {
+        resp[0] = UDS_SID_TESTER_PRESENT + UDS_RESPONSE_SID_OFFSET;  /* 0x7E */
+        resp[1] = sub;                                                /* 0x00 */
+        *resp_len = 2U;
+    }
 }
 
 /**

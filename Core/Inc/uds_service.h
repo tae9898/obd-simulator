@@ -28,6 +28,7 @@ extern "C" {
 #define UDS_SID_READ_DATA_BY_ID     0x22U  /**< ReadDataByIdentifier */
 #define UDS_SID_SECURITY_ACCESS     0x27U  /**< SecurityAccess */
 #define UDS_SID_ROUTINE_CONTROL     0x31U  /**< RoutineControl */
+#define UDS_SID_TESTER_PRESENT      0x3EU  /**< TesterPresent (S3 keep-alive) */
 /* OBD-II 서비스 (ISO 15031-5 / SAE J1979) — 기능적(0x7DF) 응답 지원 대상 */
 #define UDS_SID_OBD2_CURRENT_DATA   0x01U  /**< Mode 01: 현재 데이터 */
 #define UDS_SID_OBD2_STORED_DTC     0x03U  /**< Mode 03: 저장 DTC */
