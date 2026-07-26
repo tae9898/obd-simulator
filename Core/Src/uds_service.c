@@ -24,7 +24,7 @@
 static const char s_ecu_name[]   = ECU_NAME;
 static const char s_hw_version[] = VEHICLE_HW_VERSION;
 static const char s_sw_version[] = VEHICLE_SW_VERSION;
-static const char s_vin[]        = VEHICLE_VIN;
+static char s_vin[18]            = VEHICLE_VIN;  /* 0x2E 쓰기 가능(RAM). 17자리+NUL */
 
 /* === 소프트 리셋 플래그 (main.c에서 확인) === */
 volatile uint8_t g_soft_reset_requested = 0U;
@@ -42,6 +42,8 @@ static void handle_routine_control(const uint8_t *req, uint16_t req_len,
                                    uint8_t *resp, uint16_t *resp_len);
 static void handle_tester_present(const uint8_t *req, uint16_t req_len,
                                   uint8_t *resp, uint16_t *resp_len);
+static void handle_write_data_by_id(const uint8_t *req, uint16_t req_len,
+                                    uint8_t *resp, uint16_t *resp_len);
 static void handle_obd2_service01(const uint8_t *req, uint16_t req_len,
                                   uint8_t *resp, uint16_t *resp_len);
 static void handle_obd2_service03(const uint8_t *req, uint16_t req_len,
@@ -157,6 +159,15 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
 
         case UDS_SID_TESTER_PRESENT:
             handle_tester_present(request, request_len, response, response_len);
+            break;
+
+        case UDS_SID_WRITE_DATA_BY_ID:
+            if (DiagSession_CheckAccess(sid) != 0) {
+                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
+                                       response, response_len);
+            } else {
+                handle_write_data_by_id(request, request_len, response, response_len);
+            }
             break;
 
         default:
@@ -469,6 +480,48 @@ static void handle_tester_present(const uint8_t *req, uint16_t req_len,
         resp[1] = sub;                                                /* 0x00 */
         *resp_len = 2U;
     }
+}
+
+/**
+ * @brief  SID 0x2E: WriteDataByIdentifier
+ * @note   Extended 세션 + SecurityAccess 언락 필요 (DiagSession_CheckAccess).
+ *         VIN(0xF190) 만 쓰기 가능(17바이트). 다른 DID 는 읽기 전용 → NRC 0x31.
+ *         RAM 버퍼라 재부팅 시 초기화(비휘발성 아님 — 시뮬레이터 한계).
+ */
+static void handle_write_data_by_id(const uint8_t *req, uint16_t req_len,
+                                    uint8_t *resp, uint16_t *resp_len)
+{
+    if (req_len < 4U) {
+        build_negative_response(UDS_SID_WRITE_DATA_BY_ID, NRC_INCORRECT_MSG_LEN,
+                               resp, resp_len);
+        return;
+    }
+
+    uint16_t did = (uint16_t)(((uint16_t)req[1] << 8U) | (uint16_t)req[2]);
+    uint16_t data_len = (uint16_t)(req_len - 3U);
+
+    switch (did) {
+        case UDS_DID_VIN:
+            if (data_len != 17U) {  /* VIN = ISO 3779 17자리 */
+                build_negative_response(UDS_SID_WRITE_DATA_BY_ID, NRC_INCORRECT_MSG_LEN,
+                                       resp, resp_len);
+                return;
+            }
+            (void)memcpy(s_vin, &req[3], 17U);
+            s_vin[17] = '\0';
+            Debug_Print("[UDS] WriteDID 0xF190 (VIN, %u bytes)\r\n", data_len);
+            break;
+        default:
+            /* 읽기 전용 DID(HW/SW/ECU 이름) 또는 미지원 → 쓰기 거부 */
+            build_negative_response(UDS_SID_WRITE_DATA_BY_ID, NRC_REQUEST_OUT_OF_RANGE,
+                                   resp, resp_len);
+            return;
+    }
+
+    resp[0] = UDS_SID_WRITE_DATA_BY_ID + UDS_RESPONSE_SID_OFFSET;  /* 0x6E */
+    resp[1] = (uint8_t)(did >> 8U);
+    resp[2] = (uint8_t)(did & 0xFFU);
+    *resp_len = 3U;
 }
 
 /**
