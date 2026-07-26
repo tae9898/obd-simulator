@@ -165,6 +165,24 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
                                    response, response_len);
             break;
     }
+
+    /* SuppressPosRspMsgIndicationBit (ISO 14229-1 §7.1) — subfunc 기반 서비스에서
+     * 진단기가 subfunc bit7=1 로 "긍정 응답 보내지 마" 요청하면 응답 송신 안 함.
+     * NRC(0x7F)는 항상 송신. (0x3E 는 handle 내부에서 이미 처리; 여기선 긍정 응답만) */
+    if ((*response_len > 0U) && (response[0] != 0x7FU) &&
+        (request_len >= 2U) && ((request[1] & 0x80U) != 0U)) {
+        switch (sid) {
+            case UDS_SID_DIAG_SESSION_CTRL:
+            case UDS_SID_ECU_RESET:
+            case UDS_SID_SECURITY_ACCESS:
+            case UDS_SID_ROUTINE_CONTROL:
+            case UDS_SID_TESTER_PRESENT:
+                *response_len = 0U;
+                break;
+            default:
+                break;
+        }
+    }
 }
 
 /* ====================================================
@@ -184,7 +202,7 @@ static void handle_session_control(const uint8_t *req, uint16_t req_len,
         return;
     }
 
-    uint8_t sub = req[1];
+    uint8_t sub = (uint8_t)(req[1] & 0x7FU);   /* bit7 = suppressPosRsp (dispatch 처리) */
 
     if (sub != 0x01U && sub != 0x02U && sub != 0x03U) {
         build_negative_response(UDS_SID_DIAG_SESSION_CTRL, NRC_SUB_FUNC_NOT_SUPPORTED,
@@ -230,7 +248,7 @@ static void handle_ecu_reset(const uint8_t *req, uint16_t req_len,
         return;
     }
 
-    uint8_t reset_type = req[1];
+    uint8_t reset_type = (uint8_t)(req[1] & 0x7FU);   /* bit7 = suppressPosRsp */
 
     switch (reset_type) {
         case UDS_RESET_HARD:
@@ -321,7 +339,7 @@ static void handle_security_access(const uint8_t *req, uint16_t req_len,
         return;
     }
 
-    uint8_t level = req[1];
+    uint8_t level = (uint8_t)(req[1] & 0x7FU);   /* bit7 = suppressPosRsp */
 
     if ((level & 0x01U) != 0U) {
         /* === Request Seed === */
@@ -387,7 +405,7 @@ static void handle_routine_control(const uint8_t *req, uint16_t req_len,
         return;
     }
 
-    uint8_t  sub = req[1];
+    uint8_t  sub = req[1];   /* bit7(suppressPosRsp) 는 dispatch 에서 긍정 응답 억제로 처리 */
     uint16_t routine_id = (uint16_t)((uint16_t)req[2] << 8U) | (uint16_t)req[3];
 
     if (sub < 0x01U || sub > 0x03U) {
