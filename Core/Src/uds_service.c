@@ -44,6 +44,8 @@ static void handle_tester_present(const uint8_t *req, uint16_t req_len,
                                   uint8_t *resp, uint16_t *resp_len);
 static void handle_write_data_by_id(const uint8_t *req, uint16_t req_len,
                                     uint8_t *resp, uint16_t *resp_len);
+static void handle_communication_control(const uint8_t *req, uint16_t req_len,
+                                         uint8_t *resp, uint16_t *resp_len);
 static void handle_obd2_service01(const uint8_t *req, uint16_t req_len,
                                   uint8_t *resp, uint16_t *resp_len);
 static void handle_obd2_service03(const uint8_t *req, uint16_t req_len,
@@ -82,6 +84,8 @@ uint8_t UDS_IsFunctionallyAddressable(uint8_t sid)
         case UDS_SID_OBD2_VEHICLE_INFO:   /* 0x09 */
             return 1U;
         case UDS_SID_TESTER_PRESENT:      /* 0x3E keep-alive, functional 도 허용 */
+            return 1U;
+        case UDS_SID_COMMUNICATION_CONTROL: /* 0x28 functional broadcast 허용 */
             return 1U;
         default:
             return 0U;
@@ -159,6 +163,15 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
 
         case UDS_SID_TESTER_PRESENT:
             handle_tester_present(request, request_len, response, response_len);
+            break;
+
+        case UDS_SID_COMMUNICATION_CONTROL:
+            if (DiagSession_CheckAccess(sid) != 0) {
+                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
+                                       response, response_len);
+            } else {
+                handle_communication_control(request, request_len, response, response_len);
+            }
             break;
 
         case UDS_SID_WRITE_DATA_BY_ID:
@@ -522,6 +535,45 @@ static void handle_write_data_by_id(const uint8_t *req, uint16_t req_len,
     resp[1] = (uint8_t)(did >> 8U);
     resp[2] = (uint8_t)(did & 0xFFU);
     *resp_len = 3U;
+}
+
+/* === 0x28 통신 제어 상태 (시뮬레이터: 플래그만, 실제 CAN 송수신엔 영향 X) === */
+static uint8_t s_comm_rx_enabled = 1U;
+static uint8_t s_comm_tx_enabled = 1U;
+
+/**
+ * @brief  SID 0x28: CommunicationControl
+ * @note   controlType: 0=enableRxTx 1=enableRx/disableTx 2=disableRx/enableTx
+ *         3=disableRxTx. 시뮬레이터는 passive(정기 송신 없음)라 플래그만 저장하고
+ *         진단 응답은 계속 송신(진단 자체는 제어 대상 아님).
+ *         Extended 세션 필요(security 필수 아님). functional(0x7DF) 허용.
+ */
+static void handle_communication_control(const uint8_t *req, uint16_t req_len,
+                                         uint8_t *resp, uint16_t *resp_len)
+{
+    if (req_len < 2U) {
+        build_negative_response(UDS_SID_COMMUNICATION_CONTROL, NRC_INCORRECT_MSG_LEN,
+                               resp, resp_len);
+        return;
+    }
+    uint8_t control = (uint8_t)(req[1] & 0x7FU);  /* bit7 = suppressPosRsp */
+
+    switch (control) {
+        case 0x00U: s_comm_rx_enabled = 1U; s_comm_tx_enabled = 1U; break;
+        case 0x01U: s_comm_rx_enabled = 1U; s_comm_tx_enabled = 0U; break;
+        case 0x02U: s_comm_rx_enabled = 0U; s_comm_tx_enabled = 1U; break;
+        case 0x03U: s_comm_rx_enabled = 0U; s_comm_tx_enabled = 0U; break;
+        default:
+            build_negative_response(UDS_SID_COMMUNICATION_CONTROL, NRC_SUB_FUNC_NOT_SUPPORTED,
+                                   resp, resp_len);
+            return;
+    }
+    /* communicationType (req[2]) — 시뮬레이터에선 무시 (애플리케이션 통신만 의미) */
+
+    resp[0] = UDS_SID_COMMUNICATION_CONTROL + UDS_RESPONSE_SID_OFFSET;  /* 0x68 */
+    resp[1] = control;
+    *resp_len = 2U;
+    Debug_Print("[UDS] CommCtrl: rx=%u tx=%u\r\n", s_comm_rx_enabled, s_comm_tx_enabled);
 }
 
 /**

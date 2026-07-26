@@ -188,6 +188,12 @@ int DiagSession_CheckAccess(uint8_t sid)
             return -1;
         }
     }
+    /* 0x28 CommunicationControl: Extended 세션만 필요 (security 필수 아님) */
+    if (sid == UDS_SID_COMMUNICATION_CONTROL) {
+        if (s_session.session_type != DIAG_SESSION_EXTENDED) {
+            return -1;
+        }
+    }
     return 0;
 }
 
