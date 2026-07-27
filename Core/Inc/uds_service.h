@@ -32,6 +32,7 @@ extern "C" {
 #define UDS_SID_WRITE_DATA_BY_ID    0x2EU  /**< WriteDataByIdentifier */
 #define UDS_SID_COMMUNICATION_CONTROL 0x28U /**< CommunicationControl */
 #define UDS_SID_READ_DTC_INFORMATION  0x19U /**< ReadDTCInformation */
+#define UDS_SID_IO_CONTROL_BY_ID      0x2FU /**< InputOutputControlByIdentifier */
 /* OBD-II 서비스 (ISO 15031-5 / SAE J1979) — 기능적(0x7DF) 응답 지원 대상 */
 #define UDS_SID_OBD2_CURRENT_DATA   0x01U  /**< Mode 01: 현재 데이터 */
 #define UDS_SID_OBD2_STORED_DTC     0x03U  /**< Mode 03: 저장 DTC */
@@ -66,6 +67,7 @@ extern "C" {
 #define UDS_DID_HW_VERSION          0xF193U  /**< 하드웨어 버전 */
 #define UDS_DID_SW_VERSION          0xF195U  /**< 소프트웨어 버전 */
 #define UDS_DID_ECU_NAME            0xF198U  /**< ECU 이름 */
+#define UDS_DID_IO_CONTROL          0x0200U  /**< 가상 IO 포트 (0x2F 제어용) */
 
 /* === Routine Control === */
 #define UDS_ROUTINE_START           0x01U

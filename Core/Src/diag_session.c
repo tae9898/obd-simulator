@@ -180,7 +180,8 @@ void DiagSession_Tick(uint32_t now_ms)
  */
 int DiagSession_CheckAccess(uint8_t sid)
 {
-    if (sid == UDS_SID_ROUTINE_CONTROL || sid == UDS_SID_WRITE_DATA_BY_ID) {
+    if (sid == UDS_SID_ROUTINE_CONTROL || sid == UDS_SID_WRITE_DATA_BY_ID ||
+        sid == UDS_SID_IO_CONTROL_BY_ID) {
         if (s_session.session_type != DIAG_SESSION_EXTENDED) {
             return -1;
         }

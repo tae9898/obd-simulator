@@ -48,6 +48,8 @@ static void handle_communication_control(const uint8_t *req, uint16_t req_len,
                                          uint8_t *resp, uint16_t *resp_len);
 static void handle_read_dtc_information(const uint8_t *req, uint16_t req_len,
                                         uint8_t *resp, uint16_t *resp_len);
+static void handle_input_output_control(const uint8_t *req, uint16_t req_len,
+                                        uint8_t *resp, uint16_t *resp_len);
 static void handle_obd2_service01(const uint8_t *req, uint16_t req_len,
                                   uint8_t *resp, uint16_t *resp_len);
 static void handle_obd2_service03(const uint8_t *req, uint16_t req_len,
@@ -186,6 +188,15 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
                                        response, response_len);
             } else {
                 handle_write_data_by_id(request, request_len, response, response_len);
+            }
+            break;
+
+        case UDS_SID_IO_CONTROL_BY_ID:
+            if (DiagSession_CheckAccess(sid) != 0) {
+                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
+                                       response, response_len);
+            } else {
+                handle_input_output_control(request, request_len, response, response_len);
             }
             break;
 
@@ -630,6 +641,59 @@ static void handle_read_dtc_information(const uint8_t *req, uint16_t req_len,
                                    resp, resp_len);
             return;
     }
+}
+
+/* === 0x2F 가상 IO 제어 상태 (시뮬레이터: 실제 액추에이터 대신 플래그) === */
+static uint8_t s_io_port = 0U;
+
+/**
+ * @brief  SID 0x2F: InputOutputControlByIdentifier
+ * @note   DID 0x0200(가상 IO 포트) 만 지원. Extended 세션 + SecurityAccess 필요.
+ *         controlOption: 0x00=returnControlToECU(no-op), 0x03=shortTermAdjustment(값 지정).
+ *         resetToDefault(0x01)/freezeCurrentState(0x02) 는 미지원 → NRC 0x12.
+ */
+static void handle_input_output_control(const uint8_t *req, uint16_t req_len,
+                                        uint8_t *resp, uint16_t *resp_len)
+{
+    if (req_len < 4U) {  /* SID + DID(2) + controlOption */
+        build_negative_response(UDS_SID_IO_CONTROL_BY_ID, NRC_INCORRECT_MSG_LEN,
+                               resp, resp_len);
+        return;
+    }
+
+    uint16_t did = (uint16_t)(((uint16_t)req[1] << 8U) | (uint16_t)req[2]);
+    uint8_t  control = req[3];
+
+    if (did != UDS_DID_IO_CONTROL) {
+        build_negative_response(UDS_SID_IO_CONTROL_BY_ID, NRC_REQUEST_OUT_OF_RANGE,
+                               resp, resp_len);
+        return;
+    }
+
+    switch (control) {
+        case 0x00U:  /* returnControlToECU — 시뮬레이터엔 자율 액추에이터 없음(no-op) */
+            break;
+        case 0x03U:  /* shortTermAdjustment — 테스터가 값 직접 지정 */
+            if (req_len < 5U) {
+                build_negative_response(UDS_SID_IO_CONTROL_BY_ID, NRC_INCORRECT_MSG_LEN,
+                                       resp, resp_len);
+                return;
+            }
+            s_io_port = req[4];
+            break;
+        default:  /* 0x01 resetToDefault / 0x02 freezeCurrentState 미지원 */
+            build_negative_response(UDS_SID_IO_CONTROL_BY_ID, NRC_SUB_FUNC_NOT_SUPPORTED,
+                                   resp, resp_len);
+            return;
+    }
+
+    resp[0] = UDS_SID_IO_CONTROL_BY_ID + UDS_RESPONSE_SID_OFFSET;  /* 0x6F */
+    resp[1] = (uint8_t)(did >> 8U);
+    resp[2] = (uint8_t)(did & 0xFFU);
+    resp[3] = control;
+    resp[4] = s_io_port;   /* 현재 IO 상태 */
+    *resp_len = 5U;
+    Debug_Print("[UDS] IOControl 0x%04X ctrl=%u val=%u\r\n", did, control, s_io_port);
 }
 
 /**
