@@ -60,6 +60,13 @@ typedef enum {
     DIAG_KEY_DELAY_NOT_EXPIRED   /**< 부팅/딜레이 미경과 → NRC 0x37 */
 } DiagKeyResult_t;
 
+/* SecurityAccess 게이트(boot delay/lockout) — requestSeed/sendKey 공통 (M2) */
+typedef enum {
+    DIAG_SEC_GATE_OK = 0,
+    DIAG_SEC_GATE_DELAY,   /**< 부팅 딜레이 → NRC 0x37 */
+    DIAG_SEC_GATE_LOCKED   /**< 잠금 → NRC 0x36 */
+} DiagSecGate_t;
+
 /* === 세션 제어 블록 === */
 typedef struct {
     uint8_t  session_type;          /**< 현재 세션 타입 */
@@ -94,6 +101,13 @@ uint16_t DiagSession_GenerateSeed(void);
  *         키 내용과 무관하게 EXCEEDED/DELAY 를 반환한다.
  */
 DiagKeyResult_t DiagSession_VerifyKey(uint16_t key);
+
+/**
+ * @brief  SecurityAccess 게이트(boot delay/lockout) 공통 체크 (M2)
+ * @retval OK / DELAY(0x37) / LOCKED(0x36). 잠금 만료 시 자동 리셋.
+ * @note   requestSeed·sendKey 양쪽에서 호출 → seed 만 미리 받아가는 우회 방지.
+ */
+DiagSecGate_t DiagSession_CheckSecurityGate(void);
 
 void DiagSession_ResetS3Timeout(void);
 void DiagSession_Tick(uint32_t now_ms);

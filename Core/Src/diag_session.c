@@ -98,28 +98,36 @@ uint16_t DiagSession_GenerateSeed(void)
  *         이전 구조(int 0/-1)에서는 잠금 중에도 NRC 0x35(InvalidKey) 만 반환해
  *         공격자에게 "현재 잠겨 있음"이라는 표준 신호(0x36/0x37)를 주지 못했다.
  */
+DiagSecGate_t DiagSession_CheckSecurityGate(void)
+{
+    uint32_t now = HAL_GetTick();
+
+    /* 부팅 직후 딜레이 (NRC 0x37) */
+    if ((now - s_boot_tick) < DIAG_BOOT_DELAY_MS) {
+        Debug_Print("[DIAG] SecGate: boot delay\r\n");
+        return DIAG_SEC_GATE_DELAY;
+    }
+    /* 시도 초과 잠금 (NRC 0x36). 만료 시 자동 리셋. */
+    if (s_fail_count >= DIAG_MAX_FAIL_ATTEMPTS) {
+        if ((now - s_lockout_start) < DIAG_LOCKOUT_TIME_MS) {
+            Debug_Print("[DIAG] SecGate: locked\r\n");
+            return DIAG_SEC_GATE_LOCKED;
+        }
+        s_fail_count = 0U;  /* 잠금 만료 → 리셋 */
+    }
+    return DIAG_SEC_GATE_OK;
+}
+
 DiagKeyResult_t DiagSession_VerifyKey(uint16_t key)
 {
-    /* 1. 부팅 직후 딜레이 — power-on brute-force 완충 (NRC 0x37) */
-    uint32_t since_boot = HAL_GetTick() - s_boot_tick;
-    if (since_boot < DIAG_BOOT_DELAY_MS) {
-        Debug_Print("[DIAG] Boot delay (%lu ms left)\r\n",
-                    (unsigned long)(DIAG_BOOT_DELAY_MS - since_boot));
-        return DIAG_KEY_DELAY_NOT_EXPIRED;
+    /* 1. 게이트(boot delay/lockout) — requestSeed 와 공통 (M2) */
+    switch (DiagSession_CheckSecurityGate()) {
+        case DIAG_SEC_GATE_DELAY:  return DIAG_KEY_DELAY_NOT_EXPIRED;
+        case DIAG_SEC_GATE_LOCKED: return DIAG_KEY_EXCEEDED_ATTEMPTS;
+        default:                   break;
     }
 
-    /* 2. 시도 초과 잠금 — 올바른 키여도 잠금 기간엔 거부 (NRC 0x36) */
-    if (s_fail_count >= DIAG_MAX_FAIL_ATTEMPTS) {
-        uint32_t elapsed = HAL_GetTick() - s_lockout_start;
-        if (elapsed < DIAG_LOCKOUT_TIME_MS) {
-            Debug_Print("[DIAG] Locked out (%lu ms left)\r\n",
-                        (unsigned long)(DIAG_LOCKOUT_TIME_MS - elapsed));
-            return DIAG_KEY_EXCEEDED_ATTEMPTS;
-        }
-        s_fail_count = 0U;
-    }
-
-    /* 3. Seed 유효성 */
+    /* 2. Seed 유효성 */
     if (!s_session.seed_is_fresh) {
         Debug_Print("[DIAG] Seed not fresh\r\n");
         return DIAG_KEY_INVALID;
@@ -128,7 +136,7 @@ DiagKeyResult_t DiagSession_VerifyKey(uint16_t key)
     uint16_t expected = compute_key(s_session.seed);
     s_session.seed_is_fresh = 0U;  /* seed는 한 번만 사용 */
 
-    /* 4. 비교 → 성공(언락) / 실패(카운터++) */
+    /* 3. 비교 → 성공(언락) / 실패(카운터++) */
     if (key == expected) {
         s_session.security_level = DIAG_SEC_LEVEL1;
         s_fail_count = 0U;

@@ -385,6 +385,21 @@ static void handle_security_access(const uint8_t *req, uint16_t req_len,
 
     if ((level & 0x01U) != 0U) {
         /* === Request Seed === */
+        /* boot delay/lockout 중 requestSeed 도 거부 (M2): seed 만 미리 받아
+         * 오프라인 key 계산 후 lockout 풀리면 연사하는 우회 방지. */
+        switch (DiagSession_CheckSecurityGate()) {
+            case DIAG_SEC_GATE_DELAY:
+                build_negative_response(UDS_SID_SECURITY_ACCESS, NRC_REQUIRED_TIME_DELAY,
+                                       resp, resp_len);
+                return;
+            case DIAG_SEC_GATE_LOCKED:
+                build_negative_response(UDS_SID_SECURITY_ACCESS, NRC_EXCEEDED_ATTEMPTS,
+                                       resp, resp_len);
+                return;
+            default:
+                break;
+        }
+
         uint16_t seed = DiagSession_GenerateSeed();
 
         resp[0] = UDS_SID_SECURITY_ACCESS + UDS_RESPONSE_SID_OFFSET;
