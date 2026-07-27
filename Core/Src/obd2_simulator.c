@@ -345,3 +345,48 @@ void OBD2_DtcClear(void)
     }
     taskEXIT_CRITICAL();
 }
+
+/* UDS DTC status byte (ISO 14229-1 DTCStatusMask):
+ *   bit2 = pendingDTC, bit3 = confirmedDTC. INACTIVE = 0. */
+static uint8_t dtc_status_byte(DtcState_t s)
+{
+    switch (s) {
+        case DTC_STATE_CONFIRMED: return 0x08U;  /* bit3 */
+        case DTC_STATE_PENDING:   return 0x04U;  /* bit2 */
+        default:                  return 0x00U;
+    }
+}
+
+uint8_t OBD2_DtcCountActive(void)
+{
+    uint8_t n = 0U;
+    taskENTER_CRITICAL();
+    for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
+        DtcState_t s = g_dtc_table[i].state;
+        if ((s == DTC_STATE_CONFIRMED) || (s == DTC_STATE_PENDING)) {
+            n++;
+        }
+    }
+    taskEXIT_CRITICAL();
+    return n;
+}
+
+uint8_t OBD2_DtcGetActiveUds(uint8_t *out, uint8_t max_triples)
+{
+    uint8_t n = 0U;
+    if (out == NULL) {
+        return 0U;
+    }
+    taskENTER_CRITICAL();
+    for (uint8_t i = 0U; (i < OBD2_DTC_COUNT) && (n < max_triples); i++) {
+        DtcState_t s = g_dtc_table[i].state;
+        if ((s == DTC_STATE_CONFIRMED) || (s == DTC_STATE_PENDING)) {
+            out[(uint8_t)(n * 3U)]      = (uint8_t)(g_dtc_table[i].code >> 8U);
+            out[(uint8_t)(n * 3U + 1U)] = (uint8_t)(g_dtc_table[i].code & 0xFFU);
+            out[(uint8_t)(n * 3U + 2U)] = dtc_status_byte(s);
+            n++;
+        }
+    }
+    taskEXIT_CRITICAL();
+    return n;
+}

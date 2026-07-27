@@ -46,6 +46,8 @@ static void handle_write_data_by_id(const uint8_t *req, uint16_t req_len,
                                     uint8_t *resp, uint16_t *resp_len);
 static void handle_communication_control(const uint8_t *req, uint16_t req_len,
                                          uint8_t *resp, uint16_t *resp_len);
+static void handle_read_dtc_information(const uint8_t *req, uint16_t req_len,
+                                        uint8_t *resp, uint16_t *resp_len);
 static void handle_obd2_service01(const uint8_t *req, uint16_t req_len,
                                   uint8_t *resp, uint16_t *resp_len);
 static void handle_obd2_service03(const uint8_t *req, uint16_t req_len,
@@ -148,6 +150,10 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
             handle_read_data_by_id(request, request_len, response, response_len);
             break;
 
+        case UDS_SID_READ_DTC_INFORMATION:
+            handle_read_dtc_information(request, request_len, response, response_len);
+            break;
+
         case UDS_SID_SECURITY_ACCESS:
             handle_security_access(request, request_len, response, response_len);
             break;
@@ -201,6 +207,7 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
             case UDS_SID_SECURITY_ACCESS:
             case UDS_SID_ROUTINE_CONTROL:
             case UDS_SID_TESTER_PRESENT:
+            case UDS_SID_READ_DTC_INFORMATION:
                 *response_len = 0U;
                 break;
             default:
@@ -574,6 +581,55 @@ static void handle_communication_control(const uint8_t *req, uint16_t req_len,
     resp[1] = control;
     *resp_len = 2U;
     Debug_Print("[UDS] CommCtrl: rx=%u tx=%u\r\n", s_comm_rx_enabled, s_comm_tx_enabled);
+}
+
+/**
+ * @brief  SID 0x19: ReadDTCInformation (sub 0x01/0x02 만)
+ * @note   0x01 = 활성 DTC 개수, 0x02 = 활성 DTC 목록(code+status).
+ *         OBD-II Mode 03/07 의 UDS 표준 경로.
+ *         statusMask(요청) 은 무시 — confirmed+pending 합으로 응답 (시뮬레이터 단순화).
+ */
+static void handle_read_dtc_information(const uint8_t *req, uint16_t req_len,
+                                        uint8_t *resp, uint16_t *resp_len)
+{
+    if (req_len < 2U) {
+        build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_INCORRECT_MSG_LEN,
+                               resp, resp_len);
+        return;
+    }
+    uint8_t sub = (uint8_t)(req[1] & 0x7FU);  /* bit7 = suppressPosRsp */
+
+    switch (sub) {
+        case 0x01U: {  /* reportNumberOfDTCByStatusMask */
+            uint8_t count = OBD2_DtcCountActive();
+            resp[0] = UDS_SID_READ_DTC_INFORMATION + UDS_RESPONSE_SID_OFFSET;  /* 0x59 */
+            resp[1] = sub;
+            resp[2] = 0x0CU;  /* DTCStatusAvailabilityMask: bit2(pending)+bit3(confirmed) */
+            resp[3] = 0x00U;  /* formatIdentifier: ISO 14229-1 (2바이트 DTC) */
+            resp[4] = 0x00U;  /* DTC count high */
+            resp[5] = count;  /* DTC count low */
+            *resp_len = 6U;
+            break;
+        }
+        case 0x02U: {  /* reportDTCByStatusMask */
+            uint8_t dtc_buf[OBD2_DTC_COUNT * 3U];
+            uint8_t n = OBD2_DtcGetActiveUds(dtc_buf, OBD2_DTC_COUNT);
+            resp[0] = UDS_SID_READ_DTC_INFORMATION + UDS_RESPONSE_SID_OFFSET;
+            resp[1] = sub;
+            resp[2] = 0x0CU;  /* availabilityMask */
+            for (uint8_t i = 0U; i < n; i++) {
+                resp[(uint16_t)(3U + i * 3U)]      = dtc_buf[i * 3U];
+                resp[(uint16_t)(4U + i * 3U)]      = dtc_buf[(uint8_t)(i * 3U + 1U)];
+                resp[(uint16_t)(5U + i * 3U)]      = dtc_buf[(uint8_t)(i * 3U + 2U)];
+            }
+            *resp_len = (uint16_t)(3U + (uint16_t)n * 3U);
+            break;
+        }
+        default:
+            build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_SUB_FUNC_NOT_SUPPORTED,
+                                   resp, resp_len);
+            return;
+    }
 }
 
 /**

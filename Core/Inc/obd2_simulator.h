@@ -150,6 +150,17 @@ uint8_t OBD2_DtcGetPending(uint8_t *out, uint8_t max_pairs);
 /** 모든 DTC 를 INACTIVE 로 리셋 (Mode 04 / RoutineControl 0x0201) */
 void OBD2_DtcClear(void);
 
+/** 활성(confirmed+pending) DTC 개수 — UDS 0x19 sub 0x01 */
+uint8_t OBD2_DtcCountActive(void);
+
+/**
+ * @brief  활성 DTC 를 [code_H, code_L, status] 로 기록 — UDS 0x19 sub 0x02
+ * @param  out:          출력 버퍼 (max_triples*3 바이트)
+ * @param  max_triples:  최대 DTC 수
+ * @retval 기록한 DTC 수 (status: 0x08=confirmed, 0x04=pending)
+ */
+uint8_t OBD2_DtcGetActiveUds(uint8_t *out, uint8_t max_triples);
+
 /* === 전역 시뮬레이션 상태 === */
 extern OBD2_SimState_t g_sim_state;
 
