@@ -26,6 +26,20 @@ static const char s_hw_version[] = VEHICLE_HW_VERSION;
 static const char s_sw_version[] = VEHICLE_SW_VERSION;
 static char s_vin[18]            = VEHICLE_VIN;  /* 0x2E 쓰기 가능(RAM). 17자리+NUL */
 
+/* DID 읽기 레지스트리 (0x22, 3.2) — DID 추가 시 이 테이블에 한 줄.
+ * 0x2E(쓰기) 는 VIN 특수 처리(handle_write_data_by_id)로 별도 유지. */
+typedef struct {
+    uint16_t   did;
+    const char *data;
+} did_read_t;
+
+static const did_read_t k_did_read[] = {
+    { UDS_DID_VIN,        s_vin        },
+    { UDS_DID_HW_VERSION, s_hw_version },
+    { UDS_DID_SW_VERSION, s_sw_version },
+    { UDS_DID_ECU_NAME,   s_ecu_name   },
+};
+
 /* === 소프트 리셋 플래그 (main.c에서 확인) === */
 volatile uint8_t g_soft_reset_requested = 0U;
 
@@ -331,30 +345,22 @@ static void handle_read_data_by_id(const uint8_t *req, uint16_t req_len,
 
     uint16_t did = (uint16_t)((uint16_t)req[1] << 8U) | (uint16_t)req[2];
     const char *data_ptr = NULL;
-    uint16_t data_len = 0U;
 
-    switch (did) {
-        case UDS_DID_VIN:
-            data_ptr = s_vin;
-            data_len = (uint16_t)(strlen(s_vin));
+    /* DID 레지스트리 순회 (3.2) */
+    for (uint8_t i = 0U;
+         i < (uint8_t)(sizeof(k_did_read) / sizeof(k_did_read[0]));
+         i++) {
+        if (k_did_read[i].did == did) {
+            data_ptr = k_did_read[i].data;
             break;
-        case UDS_DID_HW_VERSION:
-            data_ptr = s_hw_version;
-            data_len = (uint16_t)(strlen(s_hw_version));
-            break;
-        case UDS_DID_SW_VERSION:
-            data_ptr = s_sw_version;
-            data_len = (uint16_t)(strlen(s_sw_version));
-            break;
-        case UDS_DID_ECU_NAME:
-            data_ptr = s_ecu_name;
-            data_len = (uint16_t)(strlen(s_ecu_name));
-            break;
-        default:
-            build_negative_response(UDS_SID_READ_DATA_BY_ID, NRC_REQUEST_OUT_OF_RANGE,
-                                   resp, resp_len);
-            return;
+        }
     }
+    if (data_ptr == NULL) {
+        build_negative_response(UDS_SID_READ_DATA_BY_ID, NRC_REQUEST_OUT_OF_RANGE,
+                               resp, resp_len);
+        return;
+    }
+    uint16_t data_len = (uint16_t)(strlen(data_ptr));
 
     /* 응답: SID+0x40, DID_MSB, DID_LSB, data... */
     resp[0] = UDS_SID_READ_DATA_BY_ID + UDS_RESPONSE_SID_OFFSET;

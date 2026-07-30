@@ -186,24 +186,41 @@ void DiagSession_Tick(uint32_t now_ms)
  *         - 시큐리티가 언락되어야 함
  *         둘 중 하나라도 불만족 → NRC 0x33 (SecurityAccessDenied)
  */
+/* === 접근 제어 정책 테이블 (ISO 14229-1 기반, 3.3) ===
+ * 명시된 SID만 제한; 나머지(0x10/0x11/0x22/0x27/0x19/0x3E 등 읽기·조회류)는
+ * 모든 세션에서 허용. 쓰기·제어류는 Extended(+security) 필요.
+ * 정책 변경은 이 테이블 한 곳에서. */
+typedef struct {
+    uint8_t sid;            /**< 서비스 ID */
+    uint8_t need_extended;  /**< 1 = Extended 세션 필요 */
+    uint8_t need_security;  /**< 1 = SecurityAccess 언락 필요 */
+} svc_access_t;
+
+static const svc_access_t k_access_rules[] = {
+    { UDS_SID_ROUTINE_CONTROL,       1U, 1U },  /* 0x31 */
+    { UDS_SID_WRITE_DATA_BY_ID,      1U, 1U },  /* 0x2E */
+    { UDS_SID_IO_CONTROL_BY_ID,      1U, 1U },  /* 0x2F */
+    { UDS_SID_COMMUNICATION_CONTROL, 1U, 0U },  /* 0x28: Extended만 */
+};
+
 int DiagSession_CheckAccess(uint8_t sid)
 {
-    if (sid == UDS_SID_ROUTINE_CONTROL || sid == UDS_SID_WRITE_DATA_BY_ID ||
-        sid == UDS_SID_IO_CONTROL_BY_ID) {
-        if (s_session.session_type != DIAG_SESSION_EXTENDED) {
-            return -1;
-        }
-        if (s_session.security_level == DIAG_SEC_LOCKED) {
-            return -1;
+    for (uint8_t i = 0U;
+         i < (uint8_t)(sizeof(k_access_rules) / sizeof(k_access_rules[0]));
+         i++) {
+        if (k_access_rules[i].sid == sid) {
+            if ((k_access_rules[i].need_extended != 0U) &&
+                (s_session.session_type != DIAG_SESSION_EXTENDED)) {
+                return -1;
+            }
+            if ((k_access_rules[i].need_security != 0U) &&
+                (s_session.security_level == DIAG_SEC_LOCKED)) {
+                return -1;
+            }
+            return 0;
         }
     }
-    /* 0x28 CommunicationControl: Extended 세션만 필요 (security 필수 아님) */
-    if (sid == UDS_SID_COMMUNICATION_CONTROL) {
-        if (s_session.session_type != DIAG_SESSION_EXTENDED) {
-            return -1;
-        }
-    }
-    return 0;
+    return 0;  /* 규칙 없으면 허용 (읽기/조회류) */
 }
 
 /**
