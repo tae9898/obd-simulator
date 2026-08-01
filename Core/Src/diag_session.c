@@ -201,6 +201,9 @@ static const svc_access_t k_access_rules[] = {
     { UDS_SID_WRITE_DATA_BY_ID,      1U, 1U },  /* 0x2E */
     { UDS_SID_IO_CONTROL_BY_ID,      1U, 1U },  /* 0x2F */
     { UDS_SID_COMMUNICATION_CONTROL, 1U, 0U },  /* 0x28: Extended만 */
+    { UDS_SID_REQUEST_DOWNLOAD,      1U, 1U },  /* 0x34: OTA */
+    { UDS_SID_TRANSFER_DATA,         1U, 1U },  /* 0x36: OTA */
+    { UDS_SID_REQUEST_TRANSFER_EXIT, 1U, 1U },  /* 0x37: OTA */
 };
 
 int DiagSession_CheckAccess(uint8_t sid)

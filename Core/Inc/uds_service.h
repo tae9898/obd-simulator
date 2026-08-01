@@ -33,6 +33,9 @@ extern "C" {
 #define UDS_SID_COMMUNICATION_CONTROL 0x28U /**< CommunicationControl */
 #define UDS_SID_READ_DTC_INFORMATION  0x19U /**< ReadDTCInformation */
 #define UDS_SID_IO_CONTROL_BY_ID      0x2FU /**< InputOutputControlByIdentifier */
+#define UDS_SID_REQUEST_DOWNLOAD      0x34U /**< RequestDownload (OTA) */
+#define UDS_SID_TRANSFER_DATA         0x36U /**< TransferData (OTA) */
+#define UDS_SID_REQUEST_TRANSFER_EXIT 0x37U /**< RequestTransferExit (OTA) */
 /* OBD-II 서비스 (ISO 15031-5 / SAE J1979) — 기능적(0x7DF) 응답 지원 대상 */
 #define UDS_SID_OBD2_CURRENT_DATA   0x01U  /**< Mode 01: 현재 데이터 */
 #define UDS_SID_OBD2_STORED_DTC     0x03U  /**< Mode 03: 저장 DTC */
@@ -56,7 +59,10 @@ extern "C" {
 #define NRC_SECURITY_ACCESS_DENIED  0x33U  /**< 시큐리티 접근 거부 */
 #define NRC_INVALID_KEY             0x35U  /**< 잘못된 키 */
 #define NRC_EXCEEDED_ATTEMPTS       0x36U  /**< 시도 횟수 초과 (잠금 중) */
-#define NRC_REQUIRED_TIME_DELAY     0x37U  /**< 필수 대기 시간 미경과 (부팅/딜레이) */
+#define NRC_REQUIRED_TIME_DELAY         0x37U  /**< 필수 대기 시간 미경과 (부팅/딜레이) */
+#define NRC_TRANSFER_DATA_SUSPENDED     0x71U  /**< TransferData 중단 (크기 초과 등) */
+#define NRC_GENERAL_PROGRAMMING_FAILURE 0x72U  /**< flash 쓰기 실패 */
+#define NRC_WRONG_BLOCK_SEQUENCE        0x73U  /**< blockSequenceCounter 불일치 */
 
 /* === ECU Reset 서브기능 === */
 #define UDS_RESET_HARD              0x01U  /**< 하드 리셋 (전체 재시작) */

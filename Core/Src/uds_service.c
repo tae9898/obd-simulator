@@ -18,6 +18,7 @@
 #include "obd2_simulator.h"
 #include "uart_debug.h"
 #include "vehicle_config.h"
+#include "ota_flash.h"   /* OTA flash erase/write (0x34/0x36/0x37) */
 #include <string.h>
 
 /* === ECU 정체 정보 (값은 vehicle_config.h 의 단일 설정) === */
@@ -64,6 +65,12 @@ static void handle_read_dtc_information(const uint8_t *req, uint16_t req_len,
                                         uint8_t *resp, uint16_t *resp_len);
 static void handle_input_output_control(const uint8_t *req, uint16_t req_len,
                                         uint8_t *resp, uint16_t *resp_len);
+static void handle_request_download(const uint8_t *req, uint16_t req_len,
+                                    uint8_t *resp, uint16_t *resp_len);
+static void handle_transfer_data(const uint8_t *req, uint16_t req_len,
+                                 uint8_t *resp, uint16_t *resp_len);
+static void handle_request_transfer_exit(const uint8_t *req, uint16_t req_len,
+                                         uint8_t *resp, uint16_t *resp_len);
 static void handle_obd2_service01(const uint8_t *req, uint16_t req_len,
                                   uint8_t *resp, uint16_t *resp_len);
 static void handle_obd2_service03(const uint8_t *req, uint16_t req_len,
@@ -211,6 +218,33 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
                                        response, response_len);
             } else {
                 handle_input_output_control(request, request_len, response, response_len);
+            }
+            break;
+
+        case UDS_SID_REQUEST_DOWNLOAD:
+            if (DiagSession_CheckAccess(sid) != 0) {
+                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
+                                       response, response_len);
+            } else {
+                handle_request_download(request, request_len, response, response_len);
+            }
+            break;
+
+        case UDS_SID_TRANSFER_DATA:
+            if (DiagSession_CheckAccess(sid) != 0) {
+                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
+                                       response, response_len);
+            } else {
+                handle_transfer_data(request, request_len, response, response_len);
+            }
+            break;
+
+        case UDS_SID_REQUEST_TRANSFER_EXIT:
+            if (DiagSession_CheckAccess(sid) != 0) {
+                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
+                                       response, response_len);
+            } else {
+                handle_request_transfer_exit(request, request_len, response, response_len);
             }
             break;
 
@@ -715,6 +749,140 @@ static void handle_input_output_control(const uint8_t *req, uint16_t req_len,
     resp[4] = s_io_port;   /* 현재 IO 상태 */
     *resp_len = 5U;
     Debug_Print("[UDS] IOControl 0x%04X ctrl=%u val=%u\r\n", did, control, s_io_port);
+}
+
+/* === OTA 전송 상태 (0x34/0x36/0x37) === */
+static uint8_t  s_xfer_active    = 0U;   /* 1=다운로드 진행 중 */
+static uint32_t s_xfer_addr      = 0U;   /* 기록 시작 주소 */
+static uint32_t s_xfer_size      = 0U;   /* 총 크기 */
+static uint32_t s_xfer_written   = 0U;   /* 기록한 바이트 */
+static uint8_t  s_xfer_block_seq = 0U;   /* 다음 기대 blockSequenceCounter (1~) */
+
+/**
+ * @brief  SID 0x34: RequestDownload — addr/size(ALFID) 파싱, OTA 영역 검증, erase, 전송 시작
+ * @note   bootloader 없이 OTA 데이터 영역(0x0801E000~)에 쓰기. 앱 교체/점프는 bootloader 단계.
+ *         Extended 세션 + SecurityAccess 필요.
+ */
+static void handle_request_download(const uint8_t *req, uint16_t req_len,
+                                    uint8_t *resp, uint16_t *resp_len)
+{
+    if (req_len < 3U) {  /* SID + ALFID */
+        build_negative_response(UDS_SID_REQUEST_DOWNLOAD, NRC_INCORRECT_MSG_LEN,
+                               resp, resp_len);
+        return;
+    }
+
+    uint8_t alfid = req[1];
+    uint8_t alen = (uint8_t)(alfid & 0x0FU);
+    uint8_t slen = (uint8_t)((alfid >> 4U) & 0x0FU);
+    if (alen == 0U || slen == 0U || alen > 4U || slen > 4U) {
+        build_negative_response(UDS_SID_REQUEST_DOWNLOAD, NRC_REQUEST_OUT_OF_RANGE,
+                               resp, resp_len);
+        return;
+    }
+    if (req_len < (uint16_t)(2U + (uint16_t)alen + (uint16_t)slen)) {
+        build_negative_response(UDS_SID_REQUEST_DOWNLOAD, NRC_INCORRECT_MSG_LEN,
+                               resp, resp_len);
+        return;
+    }
+
+    uint32_t addr = 0U;
+    uint32_t size = 0U;
+    for (uint8_t i = 0U; i < alen; i++) {
+        addr = (addr << 8U) | req[2U + i];
+    }
+    for (uint8_t i = 0U; i < slen; i++) {
+        size = (size << 8U) | req[2U + alen + i];
+    }
+
+    /* 영역 검증: OTA 데이터 영역(0x0801E000~0x0801FFFF) 만 */
+    if ((addr < OTA_FLASH_BASE) || ((addr + size) > OTA_FLASH_END)) {
+        build_negative_response(UDS_SID_REQUEST_DOWNLOAD, NRC_REQUEST_OUT_OF_RANGE,
+                               resp, resp_len);
+        return;
+    }
+    /* page 단위 erase */
+    if (ota_flash_erase(addr, size) != 0) {
+        build_negative_response(UDS_SID_REQUEST_DOWNLOAD, NRC_GENERAL_PROGRAMMING_FAILURE,
+                               resp, resp_len);
+        return;
+    }
+
+    s_xfer_active = 1U;
+    s_xfer_addr = addr;
+    s_xfer_size = size;
+    s_xfer_written = 0U;
+    s_xfer_block_seq = 1U;
+
+    /* 응답: [0x74, lengthFormatIdentifier, maxNumberOfBlockLength(2B big-endian)]
+     * lengthFormatIdentifier 하위니블 = maxBlockLength 길이(2바이트). maxBlockLength=248. */
+    resp[0] = UDS_SID_REQUEST_DOWNLOAD + UDS_RESPONSE_SID_OFFSET;  /* 0x74 */
+    resp[1] = 0x22U;
+    resp[2] = 0x00U;
+    resp[3] = 0xF8U;  /* maxNumberOfBlockLength = 248 */
+    *resp_len = 4U;
+    Debug_Print("[UDS] OTA download: addr=0x%08lX size=%lu\r\n",
+                (unsigned long)addr, (unsigned long)size);
+}
+
+/**
+ * @brief  SID 0x36: TransferData — blockSequenceCounter 검증, flash write
+ */
+static void handle_transfer_data(const uint8_t *req, uint16_t req_len,
+                                 uint8_t *resp, uint16_t *resp_len)
+{
+    if ((s_xfer_active == 0U) || (req_len < 3U)) {  /* SID + blockSeq + data */
+        build_negative_response(UDS_SID_TRANSFER_DATA, NRC_CONDITIONS_NOT_CORRECT,
+                               resp, resp_len);
+        return;
+    }
+
+    uint8_t seq = req[1];
+    if (seq != s_xfer_block_seq) {
+        build_negative_response(UDS_SID_TRANSFER_DATA, NRC_WRONG_BLOCK_SEQUENCE,
+                               resp, resp_len);
+        return;
+    }
+
+    uint32_t dlen = (uint32_t)(req_len - 2U);
+    if ((s_xfer_written + dlen) > s_xfer_size) {
+        build_negative_response(UDS_SID_TRANSFER_DATA, NRC_TRANSFER_DATA_SUSPENDED,
+                               resp, resp_len);
+        return;
+    }
+    if (ota_flash_write(s_xfer_addr + s_xfer_written, &req[2], dlen) != 0) {
+        build_negative_response(UDS_SID_TRANSFER_DATA, NRC_GENERAL_PROGRAMMING_FAILURE,
+                               resp, resp_len);
+        return;
+    }
+
+    s_xfer_written += dlen;
+    s_xfer_block_seq++;
+
+    resp[0] = UDS_SID_TRANSFER_DATA + UDS_RESPONSE_SID_OFFSET;  /* 0x76 */
+    resp[1] = seq;
+    *resp_len = 2U;
+}
+
+/**
+ * @brief  SID 0x37: RequestTransferExit — 전송 완료
+ * @note   CRC/서명 검증 생략(시뮬레이터). 실제 양산은 CRC32/서명 필수.
+ */
+static void handle_request_transfer_exit(const uint8_t *req, uint16_t req_len,
+                                         uint8_t *resp, uint16_t *resp_len)
+{
+    (void)req;
+    (void)req_len;
+    if (s_xfer_active == 0U) {
+        build_negative_response(UDS_SID_REQUEST_TRANSFER_EXIT, NRC_CONDITIONS_NOT_CORRECT,
+                               resp, resp_len);
+        return;
+    }
+    s_xfer_active = 0U;
+    resp[0] = UDS_SID_REQUEST_TRANSFER_EXIT + UDS_RESPONSE_SID_OFFSET;  /* 0x77 */
+    *resp_len = 1U;
+    Debug_Print("[UDS] OTA exit: written=%lu/%lu\r\n",
+                (unsigned long)s_xfer_written, (unsigned long)s_xfer_size);
 }
 
 /**
