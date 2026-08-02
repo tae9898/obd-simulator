@@ -197,7 +197,7 @@ int main(void)
         }
     }
 
-    Debug_Print("[INIT] FDCAN1 ready - CAN-FD 500kbps/2Mbps (BRS) @ HSE 24MHz\r\n");
+    Debug_Print("[INIT] FDCAN1 ready - FD no-BRS 500kbps @ PCLK1 42.5MHz (HSI)\r\n");
 
     Debug_Print("[INIT] Accepting all std frames 0x000-0x7FF -> RX FIFO0 (OBD-II req 0x%03X, resp 0x7E8)\r\n", OBD2_REQUEST_ID);
     Debug_Print("[INIT] UDS Services: 0x10, 0x11, 0x22, 0x27, 0x31\r\n");
@@ -714,9 +714,8 @@ void SystemClock_Config(void)
     /** 1. 전원 설정: Scale 1 모드 (170MHz 동작에 필요) */
     HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1);
 
-    /** 2. RCC 발진기 설정: HSI를 PLL 소스로 사용 */
-    RCC_OscInitStruct.OscillatorType      = RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_HSE;
-    RCC_OscInitStruct.HSEState            = RCC_HSE_ON;
+    /** 2. RCC 발진기 설정: HSI 만 사용 (HSE 불발진 → boot hang 방지) */
+    RCC_OscInitStruct.OscillatorType      = RCC_OSCILLATORTYPE_HSI;
     RCC_OscInitStruct.HSIState            = RCC_HSI_ON;
     RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
     RCC_OscInitStruct.PLL.PLLState        = RCC_PLL_ON;
@@ -747,15 +746,16 @@ void SystemClock_Config(void)
         while (1);
     }
 
-    /** 4. FDCAN 클럭 소스 설정: HSE 24MHz (정밀 크리스탈)
-     *  @note  !! Nucleo-G431RB(MB1367) HSE 크리스탈 = 24MHz (UM2505). 과거 8MHz 는 오기.
-     *         PLLQ->FDCAN 불량, HSI 기반 PCLK1 은 톨러런스 한계 초과(Form Error).
-     *         정밀 HSE 크리스탈(±50ppm) 사용. CCIPR[25:24] = 00 -> HSE.
-     *         Classic CAN 500kbps: 24MHz / (3*(1+13+2)) = 500kbps (SP 87.5%)
+    /** 4. FDCAN 클럭 소스 설정: PCLK1 (HSI+PLL 기반 42.5MHz)
+     *  @note  HSE 불발진 → boot hang 회피 (HSE 의존 제거).
+     *         PLLQ(170MHz) 경로 시도했으나 FDCAN 응답 없음 → PCLK1 폴백.
+     *         PCLK1 = HCLK/4 = 42.5MHz (CFGR PPRE1), 확정적 HSI+PLL 경로.
+     *         CCIPR[25:24] = 10 -> PCLK1.
+     *         FD no-BRS 500kbps: 42.5MHz / (5*(1+14+2)) = 500kbps (SP 88.2%)
      */
     RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
     PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_FDCAN;
-    PeriphClkInit.FdcanClockSelection   = RCC_FDCANCLKSOURCE_HSE;
+    PeriphClkInit.FdcanClockSelection   = RCC_FDCANCLKSOURCE_PCLK1;
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK) {
         while (1);
     }

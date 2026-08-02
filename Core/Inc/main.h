@@ -85,41 +85,28 @@ extern SemaphoreHandle_t xUartMutex;
 #define PCLK2_FREQ            (SYSCLK_FREQ / 2U)
 
 /* === FDCAN 클럭 설정 ===
- * !! HSE 크리스탈(24MHz, Nucleo-G431RB MB1367 탑재 — UM2505 스펙)을 FDCAN 클럭으로 사용.
- *    과거 HSE_VALUE=8MHz 는 오기(실제 24MHz). PLLQ->FDCAN 경로는 본 보드에서 불량.
- *    HSI(±1~1.5%) 기반 PCLK1 은 CAN 오실레이터 톨러런스 한계를 넘어 Form Error(LEC=2) 발생 →
- *    정밀 HSE 크리스탈(±50ppm) 로 해결. SystemClock_Config 에서 RCC_FDCANCLKSOURCE_HSE.
+ * !! FDCAN 클럭 = PCLK1 (HCLK/4 = 42.5MHz, HSI+PLL 기반).
+ *    HSE 24MHz 크리스탈 간헐 불발진(boot hang) 하여 HSE 의존 제거.
+ *    PLLQ(170MHz) 경로는 FDCAN 비정상(응답 없음) → PCLK1 폴백.
  *
- * Classic CAN 500kbps @ HSE 24MHz:
- *   24MHz / (3 * (1 + 13 + 2)) = 24MHz / 48 = 500kbps
- *   샘플 포인트 = (1+13)/16 = 87.5%  (CANable 87% 에 일치)
+ * FD no-BRS 500kbps @ PCLK1 42.5MHz (전 프레임 500kbps, 데이터 페이스 미사용):
+ *   42.5MHz / (5 * (1 + 14 + 2)) = 42.5MHz / 85 = 500kbps
+ *   샘플 포인트 = (1+14)/17 = 88.2%  (CANable 87% 에 일치)
+ *   HSI ±1% 톨러런스 → 500kbps classic 속도면 노드 간 ±1.58% 허용범위 내 안정.
  */
-#define FDCAN_CLK_FREQ        24000000U
-#define FDCAN_PRESCALER       3U
-#define FDCAN_TIME_SEG1       13U
+#define FDCAN_CLK_FREQ        42500000U
+#define FDCAN_PRESCALER       5U
+#define FDCAN_TIME_SEG1       14U
 #define FDCAN_TIME_SEG2        2U
 #define FDCAN_SJW              2U
 
-/* === CAN-FD 데이터 페이스 설정 === */
-/**
- * CAN-FD 데이터 페이스 2Mbps:
- *   bitrate = fcan / (prescaler * (1 + TimeSegment1 + TimeSegment2))
- *   FDCAN 클럭 = HSE 24MHz (FDCAN_CLK_FREQ 참조)
- *   24MHz / (1 * (1 + 8 + 3)) = 24MHz / 12 = 2Mbps
- *   샘플 포인트 = (1 + 8) / 12 = 75%
- *
- * !! 과거 주석은 "8MHz / (1*(1+2+1)) = 2Mbps" 였으나, FDCAN 클럭이
- *    HSE 24MHz 로 확정됨에 따라 실제로는 6Mbps 로 잡히는 오류였음.
- *    24MHz 기준 2Mbps 가 되도록 TimeSegment 재산정.
- *
- * CAN-FD는 두 개의 비트 전송 속도를 가짐:
- *   - 아비트레이션 페이스: 기존 500kbps (버스 충돌 판정용)
- *   - 데이터 페이스: 2Mbps (실제 데이터 전송, BRS 활성화 시에만)
- */
-#define FDCAN_DATA_PRESCALER  1U
-#define FDCAN_DATA_TIME_SEG1  8U
-#define FDCAN_DATA_TIME_SEG2  3U
-#define FDCAN_DATA_SJW        1U
+/* === CAN-FD 데이터 페이스 설정 ===
+ * FD no-BRS 모드에서는 데이터 페이스가 미사용(전 프레임 nominal 500kbps).
+ * 일관성을 위해 nominal 과 동일 값. BRS 활성화 시에만 의미를 가짐. */
+#define FDCAN_DATA_PRESCALER  5U
+#define FDCAN_DATA_TIME_SEG1  14U
+#define FDCAN_DATA_TIME_SEG2   2U
+#define FDCAN_DATA_SJW         2U
 
 /* === OBD-II CAN ID 정의 === */
 #define OBD2_REQUEST_ID       0x7E0U

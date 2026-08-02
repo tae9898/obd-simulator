@@ -60,10 +60,10 @@ uint32_t FDCAN_BytesToDlc(uint8_t bytes)
  * @param  hfdcan: FDCAN 핸들러 포인터
  * @retval HAL_OK = 성공
  *
- * @note   CAN-FD with BRS:
- *         - 아비트레이션(노미널) 페이스: 500kbps (FDCAN_PRESCALER/SEG1/SEG2)
- *         - 데이터 페이스: 2Mbps (FDCAN_DATA_* 매크로)
- *         - 송신 시 FDCAN_BRS_ON, FDCAN_FD_CAN 플래그 사용
+ * @note   CAN-FD no-BRS (HSE 불발진 → HSI 기반 PLLQ 클럭, 500kbps 고정):
+ *         - FD 프레임(최대 64바이트) 유지 → ISO-TP 64바이트 CF 보존
+ *         - 비트레이트 스위칭(BRS) 끔 → 전 프레임 nominal 500kbps 전송
+ *         - HSI ±1% 톨러런스로 2Mbps 데이터 페이스는 불안정 → 500kbps 단일 속도
  */
 HAL_StatusTypeDef FDCAN1_InitFD(FDCAN_HandleTypeDef *hfdcan)
 {
@@ -71,7 +71,7 @@ HAL_StatusTypeDef FDCAN1_InitFD(FDCAN_HandleTypeDef *hfdcan)
 
     /* --- FDCAN 인스턴스 설정 --- */
     hfdcan->Instance                 = FDCAN1;
-    hfdcan->Init.FrameFormat         = FDCAN_FRAME_FD_BRS;  /* CAN-FD with BRS */
+    hfdcan->Init.FrameFormat         = FDCAN_FRAME_FD_NO_BRS;  /* CAN-FD no-BRS */
     hfdcan->Init.Mode                = FDCAN_MODE_NORMAL;
     hfdcan->Init.AutoRetransmission  = ENABLE;
     hfdcan->Init.TransmitPause       = DISABLE;
@@ -83,11 +83,11 @@ HAL_StatusTypeDef FDCAN1_InitFD(FDCAN_HandleTypeDef *hfdcan)
     hfdcan->Init.NominalTimeSeg1      = FDCAN_TIME_SEG1;
     hfdcan->Init.NominalTimeSeg2      = FDCAN_TIME_SEG2;
 
-    /* --- 데이터 페이스: 2Mbps (여기가 핵심 변경) --- */
-    hfdcan->Init.DataPrescaler       = FDCAN_DATA_PRESCALER;  /* 1 */
-    hfdcan->Init.DataSyncJumpWidth   = FDCAN_DATA_SJW;       /* 1 */
-    hfdcan->Init.DataTimeSeg1        = FDCAN_DATA_TIME_SEG1;  /* 2 */
-    hfdcan->Init.DataTimeSeg2        = FDCAN_DATA_TIME_SEG2;  /* 1 */
+    /* --- 데이터 페이스: no-BRS 모드라 미사용, nominal 과 동일값 유지 --- */
+    hfdcan->Init.DataPrescaler       = FDCAN_DATA_PRESCALER;
+    hfdcan->Init.DataSyncJumpWidth   = FDCAN_DATA_SJW;
+    hfdcan->Init.DataTimeSeg1        = FDCAN_DATA_TIME_SEG1;
+    hfdcan->Init.DataTimeSeg2        = FDCAN_DATA_TIME_SEG2;
 
     /* --- 필터 및 FIFO 설정 --- */
     hfdcan->Init.StdFiltersNbr       = 1U;
@@ -101,7 +101,7 @@ HAL_StatusTypeDef FDCAN1_InitFD(FDCAN_HandleTypeDef *hfdcan)
         return status;
     }
 
-    Debug_Print("[FDCAN] Init OK - CAN-FD 500kbps/2Mbps (BRS)\r\n");
+    Debug_Print("[FDCAN] Init OK - FD no-BRS 500kbps (PCLK1 42.5MHz)\r\n");
     return HAL_OK;
 }
 
