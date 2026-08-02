@@ -373,8 +373,11 @@ static void vMainTask(void *pvParameters)
         /* --- ISO-TP 타임아웃 처리 --- */
         ISO_TP_Tick(xTaskGetTickCount() * portTICK_PERIOD_MS);
 
-        /* --- 세션 S3 타임아웃 처리 --- */
-        DiagSession_Tick(xTaskGetTickCount() * portTICK_PERIOD_MS);
+        /* --- 세션 S3 타임아웃 처리 ---
+         * last_activity_tick 은 HAL_GetTick() 기준(SetSession/VerifyKey 에서 갱신).
+         * now 도 HAL_GetTick() 으로 맞춰야 S3 가 정상 동작 (이전 xTaskGetTickCount*period
+         * 기준 불일치 → 0x10 직후에도 타임아웃 오판으로 session DEFAULT 복귀). */
+        DiagSession_Tick(HAL_GetTick());
 
         /* --- UDS ECU Reset 처리 --- */
         if (g_soft_reset_requested) {
