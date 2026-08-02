@@ -1,13 +1,12 @@
 /**
   ******************************************************************************
   * @file      STM32G431RBTx_FLASH.ld
-  * @brief     STM32G431RB 링커 스크립트 — App 영역 (112KB Flash, 32KB RAM)
+  * @brief     STM32G431RB 링커 스크립트 (128KB Flash, 32KB RAM)
   * @note      CubeMX 호환 구조
   ******************************************************************************
-  * 메모리 맵 (Phase 4.2 Bootloader 분할 후):
-  *   Bootloader FLASH (별도 스크립트) : 0x08000000 ~ 0x08003FFF (16KB)
-  *   App      FLASH (이 파일)         : 0x08004000 ~ 0x0801FFFF (112KB)
-  *   RAM                              : 0x20000000 ~ 0x20007FFF (32KB)
+  * 메모리 맵:
+  *   FLASH (ORIGIN = 0x08000000, LENGTH = 128K)
+  *   RAM   (ORIGIN = 0x20000000, LENGTH =  32K)
   ******************************************************************************
   */
 
@@ -18,7 +17,7 @@ ENTRY(Reset_Handler)
 MEMORY
 {
   RAM    (xrw)      : ORIGIN = 0x20000000, LENGTH = 32K
-  FLASH  (rx)       : ORIGIN = 0x08004000, LENGTH = 112K
+  FLASH  (rx)       : ORIGIN = 0x08000000, LENGTH = 128K
 }
 
 /* 스택 및 힙 크기 */

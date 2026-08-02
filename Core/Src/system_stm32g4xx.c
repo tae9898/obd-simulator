@@ -52,10 +52,8 @@ void SystemInit(void)
      * main() -> SystemClock_Config() -> 상세 클럭 설정
      */
 
-    /* 벡터 테이블 오프셋 = App 영역 시작 (Phase 4.2: bootloader 16KB 이후).
-     * bootloader가 점프 전에 이미 VTOR을 설정하지만, app 자체 Reset_Handler가
-     * 실행될 때 다시 한번 고정 — 중복이지만 안전 (CubeMX 표준 패턴). */
-    SCB->VTOR = 0x08004000U;
+    /* 벡터 테이블 오프셋 설정 (Flash 시작 주소, ITM/ETM 없음) */
+    SCB->VTOR = FLASH_BASE;
 }
 
 /**
