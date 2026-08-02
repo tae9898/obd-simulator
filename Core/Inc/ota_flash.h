@@ -13,7 +13,7 @@ extern "C" {
 
 #include "main.h"
 
-/* OTA 데이터 영역 — flash 끝 8KB (앱이 안 쓰는 빈 영역). page=2KB. */
+/* OTA 데이터 영역 — flash 끝 8KB (앱이 안 쓰는 빈 영역). */
 #define OTA_FLASH_BASE   0x0801E000U
 #define OTA_FLASH_END    0x08020000U
 #define OTA_FLASH_SIZE   (OTA_FLASH_END - OTA_FLASH_BASE)   /* 8KB */
