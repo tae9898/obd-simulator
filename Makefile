@@ -70,6 +70,14 @@ Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_exti.c \
 Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_iwdg.c
 
 # ============================================
+# Bootloader 소스 파일 (Phase 4.2 — app 점프 전용, HAL/FreeRTOS 제외)
+# ============================================
+BL_TARGET = bootloader
+BL_C_SOURCES = \
+Core/Bootloader/Src/bootloader_main.c \
+Core/Bootloader/Src/system_stm32g4xx_bl.c
+
+# ============================================
 # 어셈블리 소스 파일
 # ============================================
 ASM_SOURCES = startup_stm32g431xx.s
@@ -129,13 +137,17 @@ ASFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall
 # ============================================
 # 링커 스크립트
 # ============================================
-LDSCRIPT = STM32G431RBTX_FLASH.ld
+LDSCRIPT     = STM32G431RBTX_FLASH.ld       # App
+BL_LDSCRIPT  = STM32G431RBTX_FLASH_BL.ld    # Bootloader
 
 # ============================================
 # 라이브러리
 # ============================================
 LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) \
 -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections
+
+BL_LDFLAGS = $(MCU) -specs=nano.specs -T$(BL_LDSCRIPT) \
+-Wl,-Map=$(BUILD_DIR)/$(BL_TARGET).map,--cref -Wl,--gc-sections
 
 # ============================================
 # 기본 타겟: all
@@ -154,10 +166,14 @@ FREERTOS_OBJECTS = $(addprefix $(BUILD_DIR)/, $(FREERTOS_SOURCES:.c=.o))
 ASM_OBJECTS = $(addprefix $(BUILD_DIR)/, $(ASM_SOURCES:.s=.o))
 OBJECTS     = $(C_OBJECTS) $(HAL_OBJECTS) $(FREERTOS_OBJECTS) $(ASM_OBJECTS)
 
+# Bootloader 오브젝트 (Core/Bootloader/Src + 공유 startup)
+BL_C_OBJECTS = $(addprefix $(BUILD_DIR)/, $(BL_C_SOURCES:.c=.o))
+BL_OBJECTS   = $(BL_C_OBJECTS) $(ASM_OBJECTS)
+
 # ============================================
 # 의존성 파일 목록
 # ============================================
-DEPS = $(OBJECTS:.o=.d)
+DEPS = $(OBJECTS:.o=.d) $(BL_OBJECTS:.o=.d)
 
 # ============================================
 # ELF 링킹
@@ -184,6 +200,14 @@ $(BUILD_DIR)/Core/Src/%.o: Core/Src/%.c | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
 	@echo '컴파일 중: $<'
 	$(CC) -std=gnu11 $(CFLAGS) -MMD -MP -MF $(BUILD_DIR)/Core/Src/$*.d -c -o $@ $<
+
+# ============================================
+# C 소스 컴파일 규칙 (Core/Bootloader/Src)
+# ============================================
+$(BUILD_DIR)/Core/Bootloader/Src/%.o: Core/Bootloader/Src/%.c | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	@echo '컴파일 중 (BL): $<'
+	$(CC) -std=gnu11 $(CFLAGS) -MMD -MP -MF $(BUILD_DIR)/Core/Bootloader/Src/$*.d -c -o $@ $<
 
 # ============================================
 # HAL 드라이버 컴파일 규칙
@@ -227,10 +251,40 @@ clean:
 	-rm -fR $(BUILD_DIR)
 
 # ============================================
+# Bootloader ELF 링킹
+# ============================================
+$(BUILD_DIR)/$(BL_TARGET).elf: $(BL_OBJECTS) $(BL_LDSCRIPT) | $(BUILD_DIR)
+	@echo '링킹 중 (BL): $@'
+	$(CC) $(BL_LDFLAGS) -o $@ $(BL_OBJECTS) -lc -lm -lnosys
+
+# ============================================
+# Bootloader 바이너리 (.bin, .hex)
+# ============================================
+$(BUILD_DIR)/$(BL_TARGET).bin: $(BUILD_DIR)/$(BL_TARGET).elf
+	@echo 'BIN 생성 중 (BL): $@'
+	$(CP) -O binary $< $@
+
+$(BUILD_DIR)/$(BL_TARGET).hex: $(BUILD_DIR)/$(BL_TARGET).elf
+	@echo 'HEX 생성 중 (BL): $@'
+	$(CP) -O ihex $< $@
+
+# ============================================
+# Bootloader 빌드 타겟 (별도 호출: make bootloader)
+# ============================================
+bootloader: $(BUILD_DIR)/$(BL_TARGET).elf $(BUILD_DIR)/$(BL_TARGET).bin $(BUILD_DIR)/$(BL_TARGET).hex
+	@echo ' '
+	@echo 'Bootloader 빌드 완료:'
+	@$(SZ) $<
+
+# ============================================
 # flash 타겟 (st-flash 사용)
 # ============================================
 flash: $(BUILD_DIR)/$(TARGET).bin
-	@echo '플래시 다운로드 중...'
+	@echo '플래시 다운로드 중 (App → 0x08004000)...'
+	st-flash write $< 0x08004000
+
+flash-bl: $(BUILD_DIR)/$(BL_TARGET).bin
+	@echo '플래시 다운로드 중 (Bootloader → 0x08000000)...'
 	st-flash write $< 0x08000000
 
 # ============================================
@@ -239,10 +293,16 @@ flash: $(BUILD_DIR)/$(TARGET).bin
 size: $(BUILD_DIR)/$(TARGET).elf
 	$(SZ) $<
 
+size-bl: $(BUILD_DIR)/$(BL_TARGET).elf
+	$(SZ) $<
+
 disasm: $(BUILD_DIR)/$(TARGET).elf
 	$(OBJDUMP) -d $< > $(BUILD_DIR)/$(TARGET).asm
+
+disasm-bl: $(BUILD_DIR)/$(BL_TARGET).elf
+	$(OBJDUMP) -d $< > $(BUILD_DIR)/$(BL_TARGET).asm
 
 # ============================================
 # 헬퍼 타겟
 # ============================================
-.PHONY: all clean flash size disasm
+.PHONY: all clean bootloader flash flash-bl size size-bl disasm disasm-bl

@@ -1,12 +1,12 @@
 /**
   ******************************************************************************
-  * @file      STM32G431RBTx_FLASH.ld
-  * @brief     STM32G431RB 링커 스크립트 — App 영역 (112KB Flash, 32KB RAM)
-  * @note      CubeMX 호환 구조
+  * @file      STM32G431RBTx_FLASH_BL.ld
+  * @brief     STM32G431RB 링커 스크립트 — Bootloader 영역 (16KB Flash, 32KB RAM)
+  * @note      섹션 구조는 App 링커(STM32G431RBTX_FLASH.ld)와 동일.
   ******************************************************************************
   * 메모리 맵 (Phase 4.2 Bootloader 분할 후):
-  *   Bootloader FLASH (별도 스크립트) : 0x08000000 ~ 0x08003FFF (16KB)
-  *   App      FLASH (이 파일)         : 0x08004000 ~ 0x0801FFFF (112KB)
+  *   Bootloader FLASH (이 파일)       : 0x08000000 ~ 0x08003FFF (16KB)
+  *   App      FLASH (별도 스크립트)   : 0x08004000 ~ 0x0801FFFF (112KB)
   *   RAM                              : 0x20000000 ~ 0x20007FFF (32KB)
   ******************************************************************************
   */
@@ -18,13 +18,13 @@ ENTRY(Reset_Handler)
 MEMORY
 {
   RAM    (xrw)      : ORIGIN = 0x20000000, LENGTH = 32K
-  FLASH  (rx)       : ORIGIN = 0x08004000, LENGTH = 112K
+  FLASH  (rx)       : ORIGIN = 0x08000000, LENGTH = 16K
 }
 
 /* 스택 및 힙 크기 */
 _estack         = ORIGIN(RAM) + LENGTH(RAM);  /* 스택 top = RAM 끝 */
-_Min_Heap_Size  = 0x400 ; /* 최소 힙: 1KB */
-_Min_Stack_Size = 0x800 ; /* 최소 스택: 2KB (ISO-TP/UDS ISR 처리용) */
+_Min_Heap_Size  = 0x200 ; /* 최소 힙: 512B (bootloader는 동적 할당 안 함) */
+_Min_Stack_Size = 0x400 ; /* 최소 스택: 1KB */
 
 /* 섹션 정의 */
 SECTIONS
