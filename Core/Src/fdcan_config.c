@@ -60,10 +60,10 @@ uint32_t FDCAN_BytesToDlc(uint8_t bytes)
  * @param  hfdcan: FDCAN 핸들러 포인터
  * @retval HAL_OK = 성공
  *
- * @note   CAN-FD no-BRS (HSE 불발진 → HSI 기반 PLLQ 클럭, 500kbps 고정):
- *         - FD 프레임(최대 64바이트) 유지 → ISO-TP 64바이트 CF 보존
- *         - 비트레이트 스위칭(BRS) 끔 → 전 프레임 nominal 500kbps 전송
- *         - HSI ±1% 톨러런스로 2Mbps 데이터 페이스는 불안정 → 500kbps 단일 속도
+ * @note   CAN-FD BRS (HSE 24MHz): 아비트레이션 500kbps + 데이터 2Mbps.
+ *         - HSE 크리스탈 정상 발진 확인(SWD HSERDY 실측) → "HSE 불발진"은 오진이었음.
+ *         - FD 프레임(최대 64바이트) + BRS → 데이터 페이스 2Mbps 전송.
+ *         - 24MHz/2MHz=12 TQ 정수 분주, SP 83.3% (main.h FDCAN_* 매크로).
  */
 HAL_StatusTypeDef FDCAN1_InitFD(FDCAN_HandleTypeDef *hfdcan)
 {
@@ -71,19 +71,19 @@ HAL_StatusTypeDef FDCAN1_InitFD(FDCAN_HandleTypeDef *hfdcan)
 
     /* --- FDCAN 인스턴스 설정 --- */
     hfdcan->Instance                 = FDCAN1;
-    hfdcan->Init.FrameFormat         = FDCAN_FRAME_FD_NO_BRS;  /* CAN-FD no-BRS */
+    hfdcan->Init.FrameFormat         = FDCAN_FRAME_FD_BRS;  /* CAN-FD + BRS (데이터 2Mbps) */
     hfdcan->Init.Mode                = FDCAN_MODE_NORMAL;
     hfdcan->Init.AutoRetransmission  = ENABLE;
     hfdcan->Init.TransmitPause       = DISABLE;
     hfdcan->Init.ProtocolException   = DISABLE;
 
-    /* --- 아비트레이션 페이스: Classic CAN 500kbps (동일) --- */
+    /* --- 아비트레이션 페이스: 500kbps (HSE 24MHz, presc4/seg1_9/seg2_2) --- */
     hfdcan->Init.NominalPrescaler     = FDCAN_PRESCALER;
     hfdcan->Init.NominalSyncJumpWidth = FDCAN_SJW;
     hfdcan->Init.NominalTimeSeg1      = FDCAN_TIME_SEG1;
     hfdcan->Init.NominalTimeSeg2      = FDCAN_TIME_SEG2;
 
-    /* --- 데이터 페이스: no-BRS 모드라 미사용, nominal 과 동일값 유지 --- */
+    /* --- 데이터 페이스: 2Mbps BRS (HSE 24MHz, presc1/seg1_9/seg2_2) --- */
     hfdcan->Init.DataPrescaler       = FDCAN_DATA_PRESCALER;
     hfdcan->Init.DataSyncJumpWidth   = FDCAN_DATA_SJW;
     hfdcan->Init.DataTimeSeg1        = FDCAN_DATA_TIME_SEG1;
@@ -101,7 +101,7 @@ HAL_StatusTypeDef FDCAN1_InitFD(FDCAN_HandleTypeDef *hfdcan)
         return status;
     }
 
-    Debug_Print("[FDCAN] Init OK - FD no-BRS 500kbps (PCLK1 42.5MHz)\r\n");
+    Debug_Print("[FDCAN] Init OK - FD BRS nominal 500kbps / data 2Mbps (HSE 24MHz)\r\n");
     return HAL_OK;
 }
 

@@ -97,7 +97,7 @@ void FDCAN_LoopbackTest_Run(void)
 
     /* --- FDCAN1 초기화: INTERNAL LOOPBACK --- */
     hfdcan1.Instance                 = FDCAN1;
-    hfdcan1.Init.FrameFormat         = FDCAN_FRAME_CLASSIC;
+    hfdcan1.Init.FrameFormat         = FDCAN_FRAME_FD_BRS;  /* CAN-FD + 비트레이트 스위칭 */
     hfdcan1.Init.Mode                = FDCAN_MODE_INTERNAL_LOOPBACK;
     hfdcan1.Init.AutoRetransmission  = ENABLE;
     hfdcan1.Init.TransmitPause       = DISABLE;
@@ -106,10 +106,10 @@ void FDCAN_LoopbackTest_Run(void)
     hfdcan1.Init.NominalSyncJumpWidth = FDCAN_SJW;
     hfdcan1.Init.NominalTimeSeg1      = FDCAN_TIME_SEG1;
     hfdcan1.Init.NominalTimeSeg2      = FDCAN_TIME_SEG2;
-    hfdcan1.Init.DataPrescaler       = 1U;
-    hfdcan1.Init.DataSyncJumpWidth   = 1U;
-    hfdcan1.Init.DataTimeSeg1        = 1U;
-    hfdcan1.Init.DataTimeSeg2        = 1U;
+    hfdcan1.Init.DataPrescaler       = FDCAN_DATA_PRESCALER;
+    hfdcan1.Init.DataSyncJumpWidth   = FDCAN_DATA_SJW;
+    hfdcan1.Init.DataTimeSeg1        = FDCAN_DATA_TIME_SEG1;
+    hfdcan1.Init.DataTimeSeg2        = FDCAN_DATA_TIME_SEG2;
     hfdcan1.Init.StdFiltersNbr       = 1U;
     hfdcan1.Init.ExtFiltersNbr       = 0U;
     hfdcan1.Init.TxFifoQueueMode     = FDCAN_TX_FIFO_OPERATION;
@@ -117,9 +117,9 @@ void FDCAN_LoopbackTest_Run(void)
     /* === FDCAN 클럭 소스 안내 (SystemClock_Config 가 설정한 값을 그대로 사용) ===
      * !! 검증 결과: 본 보드에서 PLLQ->FDCAN 클럭이 동작하지 않는다.
      *    - PLLQ(CCIPR FDCANSEL=01): TX 미발생, LEC=7, 루프백 FAIL
-     *    - HSE (=00)            : 루프백 PASS
-     *    - PCLK1 (=10)          : 루프백 PASS   <-- 앱 기본값(SystemClock_Config)
-     * SystemClock_Config 가 PCLK1 을 설정하므로 여기서 강제 변경하지 않는다.
+     *    - PCLK1 (=10)          : 루프백 PASS
+     *    - HSE  (=00)           : FD_BRS 2Mbps 루프백 PASS   <-- 현재 앱 기본값
+     * SystemClock_Config 가 HSE 를 설정하므로 여기서 강제 변경하지 않는다.
      * (과거 A/B 실험용: MODIFY_REG(RCC->CCIPR, RCC_CCIPR_FDCANSEL, RCC_FDCANCLKSOURCE_HSE/PCLK1);)
      */
 
@@ -163,8 +163,8 @@ void FDCAN_LoopbackTest_Run(void)
     tx_hdr.IdType              = FDCAN_STANDARD_ID;
     tx_hdr.TxFrameType         = FDCAN_DATA_FRAME;
     tx_hdr.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
-    tx_hdr.BitRateSwitch       = FDCAN_BRS_OFF;
-    tx_hdr.FDFormat            = FDCAN_CLASSIC_CAN;
+    tx_hdr.BitRateSwitch       = FDCAN_BRS_ON;
+    tx_hdr.FDFormat            = FDCAN_FD_CAN;
     tx_hdr.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
     tx_hdr.MessageMarker       = 0U;
     tx_hdr.DataLength          = LB_TX_DLC;

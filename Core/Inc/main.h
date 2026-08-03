@@ -85,28 +85,23 @@ extern SemaphoreHandle_t xUartMutex;
 #define PCLK2_FREQ            (SYSCLK_FREQ / 2U)
 
 /* === FDCAN 클럭 설정 ===
- * !! FDCAN 클럭 = PCLK1 (HCLK/4 = 42.5MHz, HSI+PLL 기반).
- *    HSE 24MHz 크리스탈 간헐 불발진(boot hang) 하여 HSE 의존 제거.
- *    PLLQ(170MHz) 경로는 FDCAN 비정상(응답 없음) → PCLK1 폴백.
- *
- * FD no-BRS 500kbps @ PCLK1 42.5MHz (전 프레임 500kbps, 데이터 페이스 미사용):
- *   42.5MHz / (5 * (1 + 14 + 2)) = 42.5MHz / 85 = 500kbps
- *   샘플 포인트 = (1+14)/17 = 88.2%  (CANable 87% 에 일치)
- *   HSI ±1% 톨러런스 → 500kbps classic 속도면 노드 간 ±1.58% 허용범위 내 안정.
+ * CAN-FD BRS @ HSE 24MHz (아비트레이션 500kbps + 데이터 2Mbps):
+ *   nominal : 24MHz / (4 * (1 + 9 + 2)) = 24MHz / 48 = 500kbps, SP = (1+9)/12 = 83.3%
+ *   data    : 24MHz / (1 * (1 + 9 + 2)) = 24MHz / 12 = 2Mbps,   SP = 83.3%
+ *   두 페이스 모두 12 TQ (SEG1=9/SEG2=2/SJW=2), 프리스케일러만 4(nominal) vs 1(data).
+ *   HSE 크리스탈 정밀도 ±50ppm → 노드 간 동기 여유 충분.
  */
-#define FDCAN_CLK_FREQ        42500000U
-#define FDCAN_PRESCALER       5U
-#define FDCAN_TIME_SEG1       14U
-#define FDCAN_TIME_SEG2        2U
-#define FDCAN_SJW              2U
+#define FDCAN_CLK_FREQ        24000000U
+#define FDCAN_PRESCALER       4U
+#define FDCAN_TIME_SEG1       9U
+#define FDCAN_TIME_SEG2       2U
+#define FDCAN_SJW             2U
 
-/* === CAN-FD 데이터 페이스 설정 ===
- * FD no-BRS 모드에서는 데이터 페이스가 미사용(전 프레임 nominal 500kbps).
- * 일관성을 위해 nominal 과 동일 값. BRS 활성화 시에만 의미를 가짐. */
-#define FDCAN_DATA_PRESCALER  5U
-#define FDCAN_DATA_TIME_SEG1  14U
-#define FDCAN_DATA_TIME_SEG2   2U
-#define FDCAN_DATA_SJW         2U
+/* === CAN-FD 데이터 페이스 (BRS, 2Mbps) === */
+#define FDCAN_DATA_PRESCALER  1U
+#define FDCAN_DATA_TIME_SEG1  9U
+#define FDCAN_DATA_TIME_SEG2  2U
+#define FDCAN_DATA_SJW        2U
 
 /* === OBD-II CAN ID 정의 === */
 #define OBD2_REQUEST_ID       0x7E0U
