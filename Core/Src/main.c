@@ -27,7 +27,11 @@
  * MCU FDCAN 주변기기 자체 정상 여부를 검증하는 내부 루프백 테스트.
  * 1로 설정하면 정상 OBD/UDS 앱 대신 루프백 테스트만 실행한다(복귀 안 함).
  * !! 루프백 테스트 결과: MCU FDCAN 정상(PLLQ 클럭 불량이 원인).
- *    현재 앱은 PCLK1 클럭으로 수정됨 -> 0(정상 앱)으로 사용.
+ *    현재 앱은 HSE 24MHz + FD_BRS(500k/2M)로 동작(정상 앱 = 0).
+ *
+ * [BRS 실구현 완료] §7-1~7-4 검증 완료: VCP/Debug_Print 수리(블로킹 전송),
+ *    CLASSIC 루프백 PASS, FD_BRS 코어 루프백 PASS, 물리 2Mbps BRS 양방향 통신
+ *    성공(UDS 0x10→0x50 positive response). 1=루프백 진단 모드, 0=정상 앱.
  */
 #define RUN_FDCAN_LOOPBACK_TEST 0
 
@@ -197,7 +201,7 @@ int main(void)
         }
     }
 
-    Debug_Print("[INIT] FDCAN1 ready - FD no-BRS 500kbps @ PCLK1 42.5MHz (HSI)\r\n");
+    Debug_Print("[INIT] FDCAN1 ready - FD BRS 500k/2M @ HSE 24MHz\r\n");
 
     Debug_Print("[INIT] Accepting all std frames 0x000-0x7FF -> RX FIFO0 (OBD-II req 0x%03X, resp 0x7E8)\r\n", OBD2_REQUEST_ID);
     Debug_Print("[INIT] UDS Services: 0x10, 0x11, 0x22, 0x27, 0x31\r\n");
@@ -346,7 +350,7 @@ static void vMainTask(void *pvParameters)
         uint32_t fdsel = (ccipr >> 24) & 0x3;
         const char *fdsrc = (fdsel == 0U) ? "HSE" : (fdsel == 1U) ? "PLLQ"
                             : (fdsel == 2U) ? "PCLK1" : "reserved";
-        Debug_Print("[CLOCK] CCIPR=0x%08lX FDCANSEL=%s (10=PCLK1=확정)\r\n",
+        Debug_Print("[CLOCK] CCIPR=0x%08lX FDCANSEL=%s (00=HSE=현재)\r\n",
                     ccipr, fdsrc);
 
         /* PB8(FDCAN1_RX) 실제 GPIO 설정 확인 */
@@ -700,7 +704,7 @@ void vApplicationMallocFailedHook(void)
  *         - PLLM = 4  (HSI/4 = 4MHz)
  *         - PLLN = 85 (4MHz * 85 = 340MHz VCO)
  *         - PLLP = 2  (340MHz / 2 = 170MHz SYSCLK)
- *         - PLLQ = 2  (340MHz / 2 = 170MHz, FDCAN에 사용 가능)
+ *         - PLLQ = 2  (340MHz / 2 = 170MHz, FDCAN 미사용 - 현재 HSE 사용)
  *         - PLLR = 2  (340MHz / 2 = 170MHz, SYSCLK용)
  *         - AHB prescaler = 1  -> HCLK = 170MHz
  *         - APB1 prescaler = 4 -> PCLK1 = 42.5MHz
@@ -714,8 +718,10 @@ void SystemClock_Config(void)
     /** 1. 전원 설정: Scale 1 모드 (170MHz 동작에 필요) */
     HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1);
 
-    /** 2. RCC 발진기 설정: HSI 만 사용 (HSE 불발진 → boot hang 방지) */
-    RCC_OscInitStruct.OscillatorType      = RCC_OSCILLATORTYPE_HSI;
+    /** 2. RCC 발진기 설정: HSI(SYSCLK/PLL 170MHz용) + HSE(FDCAN 2M BRS용).
+     *     HSE 24MHz 크리스탈 정상 발진 확인됨(SWD HSERDY 실측, 핸드오프 §1 정정). */
+    RCC_OscInitStruct.OscillatorType      = RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_HSE;
+    RCC_OscInitStruct.HSEState            = RCC_HSE_ON;
     RCC_OscInitStruct.HSIState            = RCC_HSI_ON;
     RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
     RCC_OscInitStruct.PLL.PLLState        = RCC_PLL_ON;
@@ -746,16 +752,12 @@ void SystemClock_Config(void)
         while (1);
     }
 
-    /** 4. FDCAN 클럭 소스 설정: PCLK1 (HSI+PLL 기반 42.5MHz)
-     *  @note  HSE 불발진 → boot hang 회피 (HSE 의존 제거).
-     *         PLLQ(170MHz) 경로 시도했으나 FDCAN 응답 없음 → PCLK1 폴백.
-     *         PCLK1 = HCLK/4 = 42.5MHz (CFGR PPRE1), 확정적 HSI+PLL 경로.
-     *         CCIPR[25:24] = 10 -> PCLK1.
-     *         FD no-BRS 500kbps: 42.5MHz / (5*(1+14+2)) = 500kbps (SP 88.2%)
-     */
+    /** 4. FDCAN 클럭 소스 설정: HSE (24MHz) — CAN-FD 2Mbps BRS용.
+     *  @note  24MHz/2MHz = 12 TQ (정수 분주, SP 83.3%). PCLK1 42.5MHz는 2M이
+     *         21.25로 안 떨어져 BRS 불량. CCIPR[25:24]=00 -> HSE. */
     RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
     PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_FDCAN;
-    PeriphClkInit.FdcanClockSelection   = RCC_FDCANCLKSOURCE_PCLK1;
+    PeriphClkInit.FdcanClockSelection   = RCC_FDCANCLKSOURCE_HSE;
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK) {
         while (1);
     }

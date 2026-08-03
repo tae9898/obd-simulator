@@ -474,7 +474,7 @@ static void send_single_frame(uint32_t can_id, const uint8_t *data, uint16_t len
     tx_header.IdType              = FDCAN_STANDARD_ID;
     tx_header.TxFrameType         = FDCAN_DATA_FRAME;
     tx_header.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
-    tx_header.BitRateSwitch       = FDCAN_BRS_OFF;  /* no-BRS: nominal 500kbps 고정 */
+    tx_header.BitRateSwitch       = FDCAN_BRS_ON;   /* BRS: 데이터 페이스 2Mbps */
     tx_header.FDFormat            = FDCAN_FD_CAN;
     tx_header.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
     tx_header.MessageMarker       = 0U;
@@ -522,7 +522,7 @@ static void send_first_frame(uint32_t can_id, const uint8_t *data, uint32_t tota
     tx_header.IdType              = FDCAN_STANDARD_ID;
     tx_header.TxFrameType         = FDCAN_DATA_FRAME;
     tx_header.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
-    tx_header.BitRateSwitch       = FDCAN_BRS_OFF;  /* no-BRS: nominal 500kbps 고정 */
+    tx_header.BitRateSwitch       = FDCAN_BRS_ON;   /* BRS: 데이터 페이스 2Mbps */
     tx_header.FDFormat            = FDCAN_FD_CAN;
     tx_header.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
     tx_header.MessageMarker       = 0U;
@@ -570,7 +570,7 @@ static void send_next_cf(void)
     tx_header.IdType              = FDCAN_STANDARD_ID;
     tx_header.TxFrameType         = FDCAN_DATA_FRAME;
     tx_header.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
-    tx_header.BitRateSwitch       = FDCAN_BRS_OFF;  /* no-BRS: nominal 500kbps 고정 */
+    tx_header.BitRateSwitch       = FDCAN_BRS_ON;   /* BRS: 데이터 페이스 2Mbps */
     tx_header.FDFormat            = FDCAN_FD_CAN;
     tx_header.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
     tx_header.MessageMarker       = 0U;
@@ -618,7 +618,7 @@ static void send_flow_control(uint32_t can_id, uint8_t fs, uint8_t bs, uint8_t s
     tx_header.IdType              = FDCAN_STANDARD_ID;
     tx_header.TxFrameType         = FDCAN_DATA_FRAME;
     tx_header.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
-    tx_header.BitRateSwitch       = FDCAN_BRS_OFF;  /* no-BRS: nominal 500kbps 고정 */
+    tx_header.BitRateSwitch       = FDCAN_BRS_ON;   /* BRS: 데이터 페이스 2Mbps */
     tx_header.FDFormat            = FDCAN_FD_CAN;
     tx_header.TxEventFifoControl  = FDCAN_NO_TX_EVENTS;
     tx_header.MessageMarker       = 0U;
