@@ -43,7 +43,7 @@ extern "C" {
 /* #define HAL_DAC_MODULE_ENABLED */
 #define HAL_DMA_MODULE_ENABLED
 #define HAL_EXTI_MODULE_ENABLED
-#define HAL_FDCAN_MODULE_ENABLED            /* CAN 통신 */
+#define HAL_FDCAN_MODULE_ENABLED            /* CAN communication */
 #define HAL_FLASH_MODULE_ENABLED
 /* #define HAL_FMAC_MODULE_ENABLED */
 #define HAL_GPIO_MODULE_ENABLED
@@ -114,7 +114,7 @@ extern "C" {
   *        (when HSE is used as system clock source, directly or through the PLL).
   */
 #if !defined  (HSE_VALUE)
-#define HSE_VALUE    (24000000UL) /*!< Value of the External oscillator in Hz (Nucleo-G431RB MB1367 HSE 크리스탈 24MHz) */
+#define HSE_VALUE    (24000000UL) /*!< Value of the External oscillator in Hz (Nucleo-G431RB MB1367 HSE crystal 24MHz) */
 #endif /* HSE_VALUE */
 
 #if !defined  (HSE_STARTUP_TIMEOUT)

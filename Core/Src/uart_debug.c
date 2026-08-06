@@ -1,8 +1,8 @@
 /**
  * @file    uart_debug.c
- * @brief   UART 디버그 출력 구현
- * @note    USART2 (ST-LINK VCP)를 통한 printf 스타일 디버그 출력
- *         __io_putchar 오버라이드로 printf retarget 지원
+ * @brief   UART debug output implementation
+ * @note    printf-style debug output via USART2 (ST-LINK VCP)
+ *         printf retarget support via __io_putchar override
  */
 
 #include "uart_debug.h"
@@ -10,22 +10,22 @@
 #include <stdio.h>
 
 /**
- * @brief  USART2 디버그 포트 초기화
- * @param  huart: UART 핸들러 포인터
- * @retval HAL_OK = 성공
+ * @brief  USART2 debug port initialization
+ * @param  huart: UART handler pointer
+ * @retval HAL_OK = success
  *
- * @note   설정:
+ * @note   Configuration:
  *         - USART2, PA2(TX) / PA3(RX)
  *         - 115200 baud, 8N1
- *         - TX-only 사용 (디버그 출력 전용)
- *         - 클럭 소스: PCLK1 (42.5MHz)
+ *         - TX-only usage (debug output only)
+ *         - Clock source: PCLK1 (42.5MHz)
  *         - BRR = PCLK1 / baud = 42500000 / 115200 = 368.9 -> 369
  */
 HAL_StatusTypeDef UART_DebugInit(UART_HandleTypeDef *huart)
 {
     HAL_StatusTypeDef status;
 
-    /* --- UART 핸들러 설정 --- */
+    /* --- UART handler configuration --- */
     huart->Instance             = USART2;
     huart->Init.BaudRate        = 115200U;
     huart->Init.WordLength      = UART_WORDLENGTH_8B;
@@ -38,11 +38,11 @@ HAL_StatusTypeDef UART_DebugInit(UART_HandleTypeDef *huart)
     huart->Init.ClockPrescaler  = UART_PRESCALER_DIV1;
     huart->AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
 
-    /* --- HAL UART 초기화 --- */
+    /* --- HAL UART initialization --- */
     status = HAL_UART_Init(huart);
 
     if (status == HAL_OK) {
-        /* printf retarget: stdout 버퍼 비활성화 (즉시 출력) */
+        /* printf retarget: disable stdout buffering (immediate output) */
         setvbuf(stdout, NULL, _IONBF, 0);
     }
 
@@ -50,16 +50,16 @@ HAL_StatusTypeDef UART_DebugInit(UART_HandleTypeDef *huart)
 }
 
 /**
- * @brief  단일 문자 전송 (printf retarget용)
- * @param  ch: 전송할 문자
- * @retval 전송된 문자
+ * @brief  Single character transmit (for printf retarget)
+ * @param  ch: character to transmit
+ * @retval transmitted character
  *
- * @note   ARM Compiler/Keil과 GNU Toolchain 모두에서 동작
- *         Newlib 스텁으로 printf("%d", val) 등이 동작함
+ * @note   Works with both ARM Compiler/Keil and GNU Toolchain
+ *         Stub enables printf("%d", val) etc. to work
  */
 int __io_putchar(int ch)
 {
-    /* 개행 문자 -> CR+LF 변환 */
+    /* newline character -> CR+LF conversion */
     if (ch == (int)'\n') {
         HAL_UART_Transmit(&huart2, (uint8_t *)"\r", 1U, HAL_MAX_DELAY);
     }
@@ -69,8 +69,8 @@ int __io_putchar(int ch)
 }
 
 /**
- * @brief  printf 스타일 디버그 출력 (USART2)
- * @param  fmt: printf 형식 문자열
+ * @brief  printf-style debug output (USART2)
+ * @param  fmt: printf format string
  * @retval None
  */
 void Debug_Print(const char *fmt, ...)
@@ -89,9 +89,10 @@ void Debug_Print(const char *fmt, ...)
         xSemaphoreTake(xUartMutex, portMAX_DELAY);
     }
 
-    /* 블로킹 전송. (rev) DMA 링버퍼 경로가 동작하지 않음이 SWD+블로킹테스트로 확인되어
-     * 단순화. Debug_Print 는 태스크/main 컨텍스트에서만 호출됨(ISR-FDCAN RX 콜백은
-     * 큐 전송만) → 블로킹 안전. 256B@115200 ≈ 22ms < 200ms 타임아웃. */
+    /* Blocking transmit. (rev) DMA ring buffer path confirmed non-functional via
+     * SWD+blocking test, so simplified. Debug_Print is only called from task/main
+     * context (ISR-FDCAN RX callback only does queue send) -> blocking safe.
+     * 256B@115200 ~ 22ms < 200ms timeout. */
     HAL_UART_Transmit(&huart2, (uint8_t *)buf, (uint16_t)len, 200U);
 
     if (xUartMutex != NULL) {
@@ -100,10 +101,10 @@ void Debug_Print(const char *fmt, ...)
 }
 
 /**
- * @brief  수신된 CAN 메시지 로그 출력
+ * @brief  Log received CAN message
  * @param  id:   CAN ID
- * @param  data: 데이터 버퍼
- * @param  len:  데이터 길이
+ * @param  data: data buffer
+ * @param  len:  data length
  */
 void Debug_LogCAN_Rx(uint32_t id, const uint8_t *data, uint32_t len)
 {
@@ -121,10 +122,10 @@ void Debug_LogCAN_Rx(uint32_t id, const uint8_t *data, uint32_t len)
 }
 
 /**
- * @brief  전송한 CAN 메시지 로그 출력
+ * @brief  Log transmitted CAN message
  * @param  id:   CAN ID
- * @param  data: 데이터 버퍼
- * @param  len:  데이터 길이
+ * @param  data: data buffer
+ * @param  len:  data length
  */
 void Debug_LogCAN_Tx(uint32_t id, const uint8_t *data, uint32_t len)
 {

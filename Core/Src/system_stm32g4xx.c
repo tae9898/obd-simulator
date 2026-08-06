@@ -1,68 +1,68 @@
 /**
  * @file    system_stm32g4xx.c
- * @brief   STM32G431 시스템 클럭 설정
+ * @brief   STM32G431 system clock configuration
  * @note    HSI 16MHz -> PLL -> SYSCLK 170MHz
- *         이 파일은 Reset 핸들러 이후 가장 먼저 실행됨
+ *         This file is executed first after the Reset handler
  */
 
 #include "stm32g4xx.h"
 
-/* === 시스템 클럭 상수 === */
-/* HSI_VALUE는 stm32g4xx_hal_conf.h에서 정의됨 */
-#define SYSCLK_FREQ  170000000U /* SYSCLK 목표 = 170MHz */
+/* === System clock constants === */
+/* HSI_VALUE is defined in stm32g4xx_hal_conf.h */
+#define SYSCLK_FREQ  170000000U /* SYSCLK target = 170MHz */
 
-/** @brief 시스템 클럭 주파수 전역 변수 (HAL에서 참조) */
+/** @brief System clock frequency global variable (referenced by HAL) */
 uint32_t SystemCoreClock = SYSCLK_FREQ;
 
-/** @brief AHB 프리스케일러 값 (CMSIS SystemCoreClockUpdate에서 사용) */
+/** @brief AHB prescaler values (used by CMSIS SystemCoreClockUpdate) */
 const uint8_t AHBPrescTable[16] = {
     0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U,
     1U, 2U, 3U, 4U, 6U, 7U, 8U, 9U
 };
 
-/** @brief APB 프리스케일러 값 */
+/** @brief APB prescaler values */
 const uint8_t APBPrescTable[8] = {
     0U, 0U, 0U, 0U, 1U, 2U, 3U, 4U
 };
 
 /**
- * @brief  시스템 초기화 함수
+ * @brief  System initialization function
  * @retval None
  *
- * @note   Reset 후 C 런타임 초기화 전에 startup_stm32g431rb.s에서 호출됨
- *         여기서는 FPU만 활성화하고, 실제 클럭 설정은 main.c에서 수행
+ * @note   Called from startup_stm32g431rb.s after Reset, before C runtime init.
+ *         Only FPU is enabled here; actual clock configuration is done in main.c
  *
- *         STM32G431 FPU 활성화 순서:
- *         1. CPACR 레지스터 접근 허용
- *         2. CP10, CP11 (단정밀도 FPU) 접근 허용
+ *         STM32G431 FPU enable sequence:
+ *         1. Allow CPACR register access
+ *         2. Allow CP10, CP11 (single-precision FPU) access
  */
 void SystemInit(void)
 {
-    /* --- FPU (Floating Point Unit) 활성화 --- */
-    /* STM32G431은 Cortex-M4F이므로 하드웨어 FPU 보유 */
-    SCB->CPACR |= ((3U << 10U * 2U) |   /* CP10 = 단정밀도 FPU 접근 허용 */
-                   (3U << 11U * 2U));   /* CP11 = 단정밀도 FPU 접근 허용 */
+    /* --- FPU (Floating Point Unit) enable --- */
+    /* STM32G431 is Cortex-M4F, has hardware FPU */
+    SCB->CPACR |= ((3U << 10U * 2U) |   /* CP10 = single-precision FPU access allowed */
+                   (3U << 11U * 2U));   /* CP11 = single-precision FPU access allowed */
 
     /*
-     * 주의: 실제 클럭 설정 (PLL 등)은 main()에서 SystemClock_Config()로 수행
-     * Reset 직후에는 HSI 16MHz로 동작하며, PLL 설정 전까지 FPU만 활성화
+     * Note: Actual clock configuration (PLL etc.) is done in main() via SystemClock_Config()
+     * Immediately after reset, runs on HSI 16MHz; only FPU is enabled before PLL setup
      *
-     * 이 방식은 CubeMX 생성 코드와 동일한 패턴:
-     * SystemInit() -> 최소 초기화 (FPU, VTOR 등)
-     * main() -> SystemClock_Config() -> 상세 클럭 설정
+     * This pattern matches CubeMX generated code:
+     * SystemInit() -> minimal init (FPU, VTOR etc.)
+     * main() -> SystemClock_Config() -> detailed clock configuration
      */
 
-    /* 벡터 테이블 오프셋 설정 (Flash 시작 주소, ITM/ETM 없음) */
+    /* Vector table offset setting (Flash start address, no ITM/ETM) */
     SCB->VTOR = FLASH_BASE;
 }
 
 /**
- * @brief  SystemCoreClock 변수 업데이트
+ * @brief  SystemCoreClock variable update
  * @retval None
  *
- * @note   클럭 설정 변경 후 현재 시스템 클럭 주파수를 계산하여
- *         SystemCoreClock 전역 변수에 저장
- *         HAL_GetTick() 정확도 유지에 필요
+ * @note   After clock configuration changes, computes the current system clock frequency
+ *         and stores it in the SystemCoreClock global variable.
+ *         Required to maintain HAL_GetTick() accuracy.
  */
 void SystemCoreClockUpdate(void)
 {
@@ -72,30 +72,30 @@ void SystemCoreClockUpdate(void)
     uint32_t pllsource;
     uint32_t pllm;
 
-    /* --- CFGR 레지스터에서 SWS (System Clock Switch Status) 읽기 --- */
+    /* --- Read SWS (System Clock Switch Status) from CFGR register --- */
     tmp = RCC->CFGR & RCC_CFGR_SWS;
 
     switch (tmp) {
         case 0x00U:
-            /* HSI 사용 중 */
+            /* HSI in use */
             SystemCoreClock = HSI_VALUE;
             break;
 
         case 0x04U:
-            /* HSE 사용 중 */
+            /* HSE in use */
             SystemCoreClock = HSE_VALUE;
             break;
 
         case 0x08U:
-            /* PLL 사용 중 - PLLR 출력 */
+            /* PLL in use - PLLR output */
             pllsource = (RCC->PLLCFGR & RCC_PLLCFGR_PLLSRC);
             pllm = ((RCC->PLLCFGR & RCC_PLLCFGR_PLLM) >> RCC_PLLCFGR_PLLM_Pos) + 1U;
 
             if (pllsource == 0x00U) {
-                /* PLL 소스 = HSI */
+                /* PLL source = HSI */
                 pllvco = (HSI_VALUE / pllm);
             } else {
-                /* PLL 소스 = HSE */
+                /* PLL source = HSE */
                 pllvco = (HSE_VALUE / pllm);
             }
 
@@ -105,7 +105,7 @@ void SystemCoreClockUpdate(void)
             break;
 
         case 0x0CU:
-            /* HSI48 사용 중 (G431 지원) */
+            /* HSI48 in use (G431 supported) */
             SystemCoreClock = 48000000U;
             break;
 
@@ -114,7 +114,7 @@ void SystemCoreClockUpdate(void)
             break;
     }
 
-    /* AHB 프리스케일러 적용 */
+    /* Apply AHB prescaler */
     tmp = AHBPrescTable[((RCC->CFGR & RCC_CFGR_HPRE) >> RCC_CFGR_HPRE_Pos)];
     SystemCoreClock >>= tmp;
 }

@@ -1,7 +1,7 @@
 /**
  * @file    diag_session.c
- * @brief   UDS 진단 세션 매니저 구현
- * @note    세션 전환, S3 타임아웃, Seed-Key 시뮬레이션
+ * @brief   UDS diagnostic session manager implementation
+ * @note    Session transitions, S3 timeout, Seed-Key simulation
  */
 
 #include "diag_session.h"
@@ -9,17 +9,17 @@
 #include "uart_debug.h"
 #include <string.h>
 
-/* === 시큐리티 실패 제한 === */
-#define DIAG_MAX_FAIL_ATTEMPTS   3U     /**< 최대 Key 실패 횟수 */
-#define DIAG_LOCKOUT_TIME_MS     10000U /**< 실패 후 잠금 시간 (10초) */
+/* === Security failure limits === */
+#define DIAG_MAX_FAIL_ATTEMPTS   3U     /**< Maximum Key failure count */
+#define DIAG_LOCKOUT_TIME_MS     10000U /**< Lockout time after failure (10s) */
 
-/* === 세션 제어 블록 === */
+/* === Session control block === */
 static Diag_Session_t s_session;
 static uint8_t  s_fail_count = 0U;
 static uint32_t s_lockout_start = 0U;
-static uint32_t s_boot_tick = 0U;           /**< 부팅 시각 (boot delay 기준점) */
+static uint32_t s_boot_tick = 0U;           /**< Boot time (boot delay reference point) */
 
-/* === 내부 함수 === */
+/* === Internal functions === */
 static uint16_t compute_key(uint16_t seed);
 
 void DiagSession_Init(void)
@@ -29,8 +29,8 @@ void DiagSession_Init(void)
     s_session.security_level = DIAG_SEC_LOCKED;
     s_session.last_activity_tick = HAL_GetTick();
     s_fail_count = 0U;
-    /* s_boot_tick 은 MarkBootReady() 에서 설정 (통신 준비 시점).
-     * 여기서 설정하면 scheduler 시작 전이라 boot delay 가 무의미해진다. */
+    /* s_boot_tick is set in MarkBootReady() (communication ready point).
+     * Setting it here is too early (before scheduler start), making boot delay meaningless. */
     Debug_Print("[DIAG] Session manager init OK\r\n");
 }
 
@@ -52,7 +52,7 @@ int DiagSession_SetSession(uint8_t session_type)
     s_session.session_type = session_type;
     s_session.last_activity_tick = HAL_GetTick();
 
-    /* Default로 복귀하면 시큐리티도 잠금 */
+    /* Returning to Default also locks security */
     if (session_type == DIAG_SESSION_DEFAULT) {
         s_session.security_level = DIAG_SEC_LOCKED;
     }
@@ -62,10 +62,10 @@ int DiagSession_SetSession(uint8_t session_type)
 }
 
 /**
- * @brief  Seed 생성
- * @note   SysTick 카운터를 엔트로피 소스로 사용.
- *         실제 ECU에서는 TRNG(True Random Number Generator) 사용.
- *         시뮬레이션이라 SysTick으로 충분.
+ * @brief  Generate seed
+ * @note   Uses SysTick counter as entropy source.
+ *         Real ECU uses TRNG (True Random Number Generator).
+ *         SysTick is sufficient for simulation.
  */
 uint16_t DiagSession_GenerateSeed(void)
 {
@@ -73,7 +73,7 @@ uint16_t DiagSession_GenerateSeed(void)
     s_session.seed = (uint16_t)((tick ^ (tick >> 16U)) & 0xFFFFU);
 
     if (s_session.seed == 0U) {
-        s_session.seed = 0x0001U;  /* 0은 이미 언락됨을 의미하므로 금지 */
+        s_session.seed = 0x0001U;  /* 0 implies already unlocked, so forbidden */
     }
 
     s_session.seed_is_fresh = 1U;
@@ -84,59 +84,60 @@ uint16_t DiagSession_GenerateSeed(void)
 }
 
 /**
- * @brief  Key 검증 (사유별 결과 반환)
+ * @brief  Key verification (returns result by reason)
  * @retval DIAG_KEY_OK / DIAG_KEY_INVALID / DIAG_KEY_EXCEEDED_ATTEMPTS /
  *         DIAG_KEY_DELAY_NOT_EXPIRED
  *
- * 시큐리티 절차 (우선순위순):
- *   1. 부팅 직후 딜레이 미경과 → DELAY_NOT_EXPIRED (NRC 0x37)
- *   2. 3회 실패 후 잠금 기간   → EXCEEDED_ATTEMPTS   (NRC 0x36)
- *   3. Seed 미발행             → INVALID             (NRC 0x35)
- *   4. Key = compute_key(seed) 비교 → OK(언락) / INVALID(카운터++)
+ * Security procedure (priority order):
+ *   1. Boot delay not elapsed       -> DELAY_NOT_EXPIRED (NRC 0x37)
+ *   2. 3 failures then lockout     -> EXCEEDED_ATTEMPTS   (NRC 0x36)
+ *   3. Seed not issued             -> INVALID             (NRC 0x35)
+ *   4. Compare key = compute_key(seed) -> OK (unlock) / INVALID (counter++)
  *
- * @note   잠금/딜레이 중에는 올바른 키라도 거부한다 (ISO 14229-1).
- *         이전 구조(int 0/-1)에서는 잠금 중에도 NRC 0x35(InvalidKey) 만 반환해
- *         공격자에게 "현재 잠겨 있음"이라는 표준 신호(0x36/0x37)를 주지 못했다.
+ * @note   During lockout/delay, even the correct key is rejected (ISO 14229-1).
+ *         The previous structure (int 0/-1) only returned NRC 0x35 (InvalidKey)
+ *         during lockout, which did not provide the attacker the standard signal
+ *         (0x36/0x37) indicating "currently locked".
  */
 DiagSecGate_t DiagSession_CheckSecurityGate(void)
 {
     uint32_t now = HAL_GetTick();
 
-    /* 부팅 직후 딜레이 (NRC 0x37) */
+    /* Boot delay (NRC 0x37) */
     if ((now - s_boot_tick) < DIAG_BOOT_DELAY_MS) {
         Debug_Print("[DIAG] SecGate: boot delay\r\n");
         return DIAG_SEC_GATE_DELAY;
     }
-    /* 시도 초과 잠금 (NRC 0x36). 만료 시 자동 리셋. */
+    /* Attempt limit lockout (NRC 0x36). Auto-reset on expiry. */
     if (s_fail_count >= DIAG_MAX_FAIL_ATTEMPTS) {
         if ((now - s_lockout_start) < DIAG_LOCKOUT_TIME_MS) {
             Debug_Print("[DIAG] SecGate: locked\r\n");
             return DIAG_SEC_GATE_LOCKED;
         }
-        s_fail_count = 0U;  /* 잠금 만료 → 리셋 */
+        s_fail_count = 0U;  /* Lockout expired -> reset */
     }
     return DIAG_SEC_GATE_OK;
 }
 
 DiagKeyResult_t DiagSession_VerifyKey(uint16_t key)
 {
-    /* 1. 게이트(boot delay/lockout) — requestSeed 와 공통 (M2) */
+    /* 1. Gate (boot delay/lockout) -- shared with requestSeed (M2) */
     switch (DiagSession_CheckSecurityGate()) {
         case DIAG_SEC_GATE_DELAY:  return DIAG_KEY_DELAY_NOT_EXPIRED;
         case DIAG_SEC_GATE_LOCKED: return DIAG_KEY_EXCEEDED_ATTEMPTS;
         default:                   break;
     }
 
-    /* 2. Seed 유효성 */
+    /* 2. Seed validity */
     if (!s_session.seed_is_fresh) {
         Debug_Print("[DIAG] Seed not fresh\r\n");
         return DIAG_KEY_INVALID;
     }
 
     uint16_t expected = compute_key(s_session.seed);
-    s_session.seed_is_fresh = 0U;  /* seed는 한 번만 사용 */
+    s_session.seed_is_fresh = 0U;  /* Seed is single-use */
 
-    /* 3. 비교 → 성공(언락) / 실패(카운터++) */
+    /* 3. Compare -> success (unlock) / failure (counter++) */
     if (key == expected) {
         s_session.security_level = DIAG_SEC_LEVEL1;
         s_fail_count = 0U;
@@ -163,9 +164,9 @@ void DiagSession_ResetS3Timeout(void)
 }
 
 /**
- * @brief  S3 타임아웃 처리
- * @note   5초간 활동 없으면 Default 세션으로 복귀.
- *         Default 세션에서는 타임아웃 없음 (이미 기본 상태).
+ * @brief  S3 timeout handling
+ * @note   If no activity for 5 seconds, returns to Default session.
+ *         No timeout in Default session (already in default state).
  */
 void DiagSession_Tick(uint32_t now_ms)
 {
@@ -180,27 +181,28 @@ void DiagSession_Tick(uint32_t now_ms)
 }
 
 /**
- * @brief  서비스 접근 권한 확인
- * @note   SID 0x31 (RoutineControl) 규칙:
- *         - Extended 세션이어야 함
- *         - 시큐리티가 언락되어야 함
- *         둘 중 하나라도 불만족 → NRC 0x33 (SecurityAccessDenied)
+ * @brief  Service access permission check
+ * @note   SID 0x31 (RoutineControl) rules:
+ *         - Extended session required
+ *         - Security must be unlocked
+ *         If either condition is not met -> NRC 0x33 (SecurityAccessDenied)
  */
-/* === 접근 제어 정책 테이블 (ISO 14229-1 기반, 3.3) ===
- * 명시된 SID만 제한; 나머지(0x10/0x11/0x22/0x27/0x19/0x3E 등 읽기·조회류)는
- * 모든 세션에서 허용. 쓰기·제어류는 Extended(+security) 필요.
- * 정책 변경은 이 테이블 한 곳에서. */
+/* === Access control policy table (ISO 14229-1 based, 3.3) ===
+ * Only listed SIDs are restricted; all others (0x10/0x11/0x22/0x27/0x19/0x3E
+ * read/query services) are allowed in all sessions.
+ * Write/control services require Extended (+security).
+ * Policy changes are made in this one table. */
 typedef struct {
-    uint8_t sid;            /**< 서비스 ID */
-    uint8_t need_extended;  /**< 1 = Extended 세션 필요 */
-    uint8_t need_security;  /**< 1 = SecurityAccess 언락 필요 */
+    uint8_t sid;            /**< Service ID */
+    uint8_t need_extended;  /**< 1 = Extended session required */
+    uint8_t need_security;  /**< 1 = SecurityAccess unlock required */
 } svc_access_t;
 
 static const svc_access_t k_access_rules[] = {
     { UDS_SID_ROUTINE_CONTROL,       1U, 1U },  /* 0x31 */
     { UDS_SID_WRITE_DATA_BY_ID,      1U, 1U },  /* 0x2E */
     { UDS_SID_IO_CONTROL_BY_ID,      1U, 1U },  /* 0x2F */
-    { UDS_SID_COMMUNICATION_CONTROL, 1U, 0U },  /* 0x28: Extended만 */
+    { UDS_SID_COMMUNICATION_CONTROL, 1U, 0U },  /* 0x28: Extended only */
     { UDS_SID_REQUEST_DOWNLOAD,      1U, 1U },  /* 0x34: OTA */
     { UDS_SID_TRANSFER_DATA,         1U, 1U },  /* 0x36: OTA */
     { UDS_SID_REQUEST_TRANSFER_EXIT, 1U, 1U },  /* 0x37: OTA */
@@ -223,17 +225,17 @@ int DiagSession_CheckAccess(uint8_t sid)
             return 0;
         }
     }
-    return 0;  /* 규칙 없으면 허용 (읽기/조회류) */
+    return 0;  /* No rule = allowed (read/query services) */
 }
 
 /**
- * @brief  Seed-Key 알고리즘
+ * @brief  Seed-Key algorithm
  * @note   key = ((seed ^ 0x5A3C) rotate_left 3) & 0xFFFF
  *
- *         시뮬레이션용 단순 알고리즘.
- *         실제 양산에서는 메모리 보호, 난수 품질 등 더 엄격함.
+ *         Simple algorithm for simulation.
+ *         Production uses stricter memory protection, RNG quality, etc.
  *
- *         계산 예시: seed = 0xA3F7
+ *         Calculation example: seed = 0xA3F7
  *           1. XOR:  0xA3F7 ^ 0x5A3C = 0xF9CB
  *           2. ROL3: 0xF9CB <<< 3 = (0xF9CB << 3) | (0xF9CB >> 13)
  *                         = 0xFCE58 & 0xFFFF | 0x1F

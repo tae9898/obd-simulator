@@ -1,14 +1,14 @@
 /**
   ******************************************************************************
   * @file      startup_stm32g431xx.s
-  * @brief     STM32G431xx Cortex-M4 시작 어셈블리
-  * @note      CubeMX 호환 startup 파일
+  * @brief     STM32G431xx Cortex-M4 startup assembly
+  * @note      CubeMX compatible startup file
   ******************************************************************************
-  * 기능:
-  *   - 스택 및 힙 크기 정의
-  *   - 인터럽트 벡터 테이블 구성
-  *   - Reset 핸들러: .data 복사, .bss 제로 초기화, main 호출
-  *   - 미구현 인터럽트 핸들러: 무한 루프
+  * Features:
+  *   - Stack and heap size definitions
+  *   - Interrupt vector table configuration
+  *   - Reset handler: .data copy, .bss zero init, call main
+  *   - Unimplemented interrupt handlers: infinite loop
   ******************************************************************************
   */
 
@@ -21,55 +21,55 @@
 .global  Default_Handler
 
 /* ============================================
- * 시작 코드는 Flash에 배치
+ * Startup code is placed in Flash
  * ============================================ */
 .startup:
 
 /* ============================================
- * 스택 크기 설정 (8바이트 정렬)
+ * Stack size setting (8-byte aligned)
  * ============================================ */
 .stack:
   .syntax unified
   .thumb
   .align 3
-  .word  Stack_Size            /* 스택 크기 값 저장 */
+  .word  Stack_Size            /* Store stack size value */
 
 /* ============================================
- * 힙 크기 설정
+ * Heap size setting
  * ============================================ */
 .heap:
   .syntax unified
   .thumb
   .align 3
-  .word  Heap_Size             /* 힙 크기 값 저장 */
+  .word  Heap_Size             /* Store heap size value */
 
 /* ============================================
- * Vector Table (벡터 테이블)
- * STM32G431 전체 인터럽트 벡터
+ * Vector Table
+ * All STM32G431 interrupt vectors
  * ============================================ */
   .section  .isr_vector,"a",%progbits
   .type  g_pfnVectors, %object
   .size  g_pfnVectors, .-g_pfnVectors
 
 g_pfnVectors:
-  .word  _estack               /* 초기 스택 포인터 */
-  .word  Reset_Handler         /* 리셋 핸들러 */
-  .word  NMI_Handler           /* NMI 핸들러 */
-  .word  HardFault_Handler     /* 하드폴트 핸들러 */
-  .word  MemManage_Handler     /* 메모리 관리 폴트 */
-  .word  BusFault_Handler      /* 버스 폴트 */
-  .word  UsageFault_Handler    /* 사용 폴트 */
-  .word  0                     /* 예약됨 */
-  .word  0                     /* 예약됨 */
-  .word  0                     /* 예약됨 */
-  .word  0                     /* 예약됨 */
-  .word  SVC_Handler           /* SVCall 핸들러 */
-  .word  DebugMon_Handler      /* 디버그 모니터 */
-  .word  0                     /* 예약됨 */
-  .word  PendSV_Handler        /* PendSV 핸들러 */
-  .word  SysTick_Handler       /* SysTick 핸들러 */
+  .word  _estack               /* Initial stack pointer */
+  .word  Reset_Handler         /* Reset handler */
+  .word  NMI_Handler           /* NMI handler */
+  .word  HardFault_Handler     /* Hard fault handler */
+  .word  MemManage_Handler     /* Memory management fault */
+  .word  BusFault_Handler      /* Bus fault */
+  .word  UsageFault_Handler    /* Usage fault */
+  .word  0                     /* Reserved */
+  .word  0                     /* Reserved */
+  .word  0                     /* Reserved */
+  .word  0                     /* Reserved */
+  .word  SVC_Handler           /* SVCall handler */
+  .word  DebugMon_Handler      /* Debug monitor */
+  .word  0                     /* Reserved */
+  .word  PendSV_Handler        /* PendSV handler */
+  .word  SysTick_Handler       /* SysTick handler */
 
-  /* --- 외부 인터럽트 벡터 --- */
+  /* --- External interrupt vectors --- */
 
   .word  WWDG_IRQHandler                   /* [0]  Window Watchdog */
   .word  PVD_IRQHandler                    /* [1]  PVM through EXTI Line detection */
@@ -87,7 +87,7 @@ g_pfnVectors:
   .word  DMA1_Channel4_IRQHandler          /* [13] DMA1 Channel 4 */
   .word  DMA1_Channel5_IRQHandler          /* [14] DMA1 Channel 5 */
   .word  DMA1_Channel6_IRQHandler          /* [15] DMA1 Channel 6 */
-  .word  0                                 /* [16] 예약됨 */
+  .word  0                                 /* [16] Reserved */
   .word  ADC1_2_IRQHandler                 /* [17] ADC1 & ADC2 */
   .word  USB_HP_IRQHandler                 /* [18] USB Device High Priority */
   .word  USB_LP_IRQHandler                 /* [19] USB Device Low Priority */
@@ -117,13 +117,13 @@ g_pfnVectors:
   .word  TIM8_UP_IRQHandler               /* [43] TIM8 Update */
   .word  TIM8_TRG_COM_IRQHandler          /* [44] TIM8 Trigger/Commutation */
   .word  TIM8_CC_IRQHandler               /* [45] TIM8 Capture Compare */
-  .word  0                                 /* [46] 예약됨 */
-  .word  0                                 /* [47] 예약됨 */
-  .word  0                                 /* [48] 예약됨 */
-  .word  0                                 /* [49] 예약됨 */
+  .word  0                                 /* [46] Reserved */
+  .word  0                                 /* [47] Reserved */
+  .word  0                                 /* [48] Reserved */
+  .word  0                                 /* [49] Reserved */
   .word  SPI3_IRQHandler                   /* [50] SPI3 */
   .word  UART4_IRQHandler                  /* [51] UART4 */
-  .word  0                                 /* [52] 예약됨 */
+  .word  0                                 /* [52] Reserved */
   .word  TIM6_DAC_IRQHandler               /* [53] TIM6 & DAC1 underrun */
   .word  TIM7_IRQHandler                   /* [54] TIM7 */
   .word  DMA2_Channel1_IRQHandler          /* [55] DMA2 Channel 1 */
@@ -131,64 +131,64 @@ g_pfnVectors:
   .word  DMA2_Channel3_IRQHandler          /* [57] DMA2 Channel 3 */
   .word  DMA2_Channel4_IRQHandler          /* [58] DMA2 Channel 4 */
   .word  DMA2_Channel5_IRQHandler          /* [59] DMA2 Channel 5 */
-  .word  0                                 /* [60] 예약됨 */
-  .word  0                                 /* [61] 예약됨 */
+  .word  0                                 /* [60] Reserved */
+  .word  0                                 /* [61] Reserved */
   .word  UCPD1_IRQHandler                  /* [62] UCPD1 */
   .word  COMP1_2_3_IRQHandler              /* [63] COMP1, COMP2 & COMP3 */
   .word  COMP4_IRQHandler                  /* [64] COMP4 */
-  .word  0                                 /* [65] 예약됨 */
-  .word  0                                 /* [66] 예약됨 */
-  .word  0                                 /* [67] 예약됨 */
-  .word  0                                 /* [68] 예약됨 */
-  .word  0                                 /* [69] 예약됨 */
-  .word  0                                 /* [70] 예약됨 */
-  .word  0                                 /* [71] 예약됨 */
-  .word  0                                 /* [72] 예약됨 */
-  .word  0                                 /* [73] 예약됨 */
-  .word  0                                 /* [74] 예약됨 */
+  .word  0                                 /* [65] Reserved */
+  .word  0                                 /* [66] Reserved */
+  .word  0                                 /* [67] Reserved */
+  .word  0                                 /* [68] Reserved */
+  .word  0                                 /* [69] Reserved */
+  .word  0                                 /* [70] Reserved */
+  .word  0                                 /* [71] Reserved */
+  .word  0                                 /* [72] Reserved */
+  .word  0                                 /* [73] Reserved */
+  .word  0                                 /* [74] Reserved */
   .word  CRS_IRQHandler                    /* [75] CRS */
   .word  SAI1_IRQHandler                   /* [76] SAI1 */
-  .word  0                                 /* [77] 예약됨 */
-  .word  0                                 /* [78] 예약됨 */
-  .word  0                                 /* [79] 예약됨 */
+  .word  0                                 /* [77] Reserved */
+  .word  0                                 /* [78] Reserved */
+  .word  0                                 /* [79] Reserved */
   .word  FPU_IRQHandler                    /* [80] FPU */
-  .word  0                                 /* [81] 예약됨 */
-  .word  0                                 /* [82] 예약됨 */
-  .word  0                                 /* [83] 예약됨 */
-  .word  0                                 /* [84] 예약됨 */
+  .word  0                                 /* [81] Reserved */
+  .word  0                                 /* [82] Reserved */
+  .word  0                                 /* [83] Reserved */
+  .word  0                                 /* [84] Reserved */
   .word  RNG_IRQHandler                    /* [85] RNG */
   .word  LPUART1_IRQHandler                /* [86] LPUART1 */
   .word  I2C3_EV_IRQHandler                /* [87] I2C3 Event */
   .word  I2C3_ER_IRQHandler                /* [88] I2C3 Error */
   .word  DMAMUX_OVR_IRQHandler             /* [89] DMAMUX Overrun */
-  .word  0                                 /* [90] 예약됨 */
-  .word  0                                 /* [91] 예약됨 */
-  .word  0                                 /* [92] 예약됨 */
-  .word  0                                 /* [93] 예약됨 */
-  .word  0                                 /* [94] 예약됨 */
-  .word  0                                 /* [95] 예약됨 */
-  .word  0                                 /* [96] 예약됨 */
-  .word  0                                 /* [97] 예약됨 */
-  .word  0                                 /* [98] 예약됨 */
-  .word  0                                 /* [99] 예약됨 */
-  .word  0                                 /* [100] 예약됨 */
-  .word  0                                 /* [101] 예약됨 */
+  .word  0                                 /* [90] Reserved */
+  .word  0                                 /* [91] Reserved */
+  .word  0                                 /* [92] Reserved */
+  .word  0                                 /* [93] Reserved */
+  .word  0                                 /* [94] Reserved */
+  .word  0                                 /* [95] Reserved */
+  .word  0                                 /* [96] Reserved */
+  .word  0                                 /* [97] Reserved */
+  .word  0                                 /* [98] Reserved */
+  .word  0                                 /* [99] Reserved */
+  .word  0                                 /* [100] Reserved */
+  .word  0                                 /* [101] Reserved */
   .word  DAC2_IRQHandler                   /* [102] DAC2 */
-  .word  0                                 /* [103] 예약됨 */
-  .word  0                                 /* [104] 예약됨 */
-  .word  0                                 /* [105] 예약됨 */
+  .word  0                                 /* [103] Reserved */
+  .word  0                                 /* [104] Reserved */
+  .word  0                                 /* [105] Reserved */
   .word  LPTIM1_IRQHandler                 /* [106] LPTIM1 */
   .word  LPTIM2_IRQHandler                 /* [107] LPTIM2 */
 
 /*******************************************************************************
 *
-* Reset_Handler: 프로세서 리셋 후 최초 실행 코드
-*   1. .data 섹션을 Flash에서 RAM으로 복사
-*   2. .bss 섹션을 제로로 초기화
-*   3. FPU 활성화 (Cortex-M4F)
-*   4. SystemInit() 호출 (클럭 설정)
-*   5. __libc_init_array() 호출 (C 런타임 초기화)
-*   6. main() 호출
+* Reset_Handler: First code executed after processor reset
+*   1. Copy .data section from Flash to RAM
+*   2. Zero-initialize .bss section
+*   3. Enable FPU (Cortex-M4F)
+*   4. Call SystemInit() (clock configuration)
+*   5. Call __libc_init_array() (C runtime initialization)
+*   6. Call main()
 *
 *******************************************************************************/
   .section  .text.Reset_Handler
@@ -196,12 +196,12 @@ g_pfnVectors:
   .type  Reset_Handler, %function
 Reset_Handler:
   ldr   r0, =_estack
-  mov   sp, r0                   /* 스택 포인터 설정 */
+  mov   sp, r0                   /* Set stack pointer */
 
-  /* .data 섹션을 Flash에서 RAM으로 복사 */
-  ldr   r0, =_sdata              /* RAM 목적지 시작 */
-  ldr   r1, =_edata              /* RAM 목적지 끝 */
-  ldr   r2, =_sidata             /* Flash 소스 시작 */
+  /* Copy .data section from Flash to RAM */
+  ldr   r0, =_sdata              /* RAM destination start */
+  ldr   r1, =_edata              /* RAM destination end */
+  ldr   r2, =_sidata             /* Flash source start */
 copy_data_init:
   cmp   r0, r1
   ittt  lt
@@ -209,9 +209,9 @@ copy_data_init:
   strlt r3, [r0], #4
   blt   copy_data_init
 
-  /* .bss 섹션을 제로로 초기화 */
-  ldr   r0, =_sbss               /* BSS 시작 */
-  ldr   r1, =_ebss               /* BSS 끝 */
+  /* Zero-initialize .bss section */
+  ldr   r0, =_sbss               /* BSS start */
+  ldr   r1, =_ebss               /* BSS end */
   mov   r2, #0
 zero_bss_init:
   cmp   r0, r1
@@ -219,24 +219,24 @@ zero_bss_init:
   strlt r2, [r0], #4
   blt   zero_bss_init
 
-  /* FPU (부동소수점 유닛) 활성화 */
-  ldr   r0, =0xE000ED88          /* CPACR 레지스터 주소 */
+  /* Enable FPU (floating-point unit) */
+  ldr   r0, =0xE000ED88          /* CPACR register address */
   ldr   r1, [r0]
-  orr   r1, r1, #(0xF << 20)     /* CP10, CP11 Full Access 설정 */
+  orr   r1, r1, #(0xF << 20)     /* Set CP10, CP11 Full Access */
   str   r1, [r0]
   dsb
   isb
 
-  /* SystemInit 호출 (클럭 시스템 초기화) */
+  /* Call SystemInit (clock system initialization) */
   bl    SystemInit
 
-  /* C 런타임 초기화 (생성자 호출 등) */
+  /* C runtime initialization (constructor calls, etc.) */
   bl    __libc_init_array
 
-  /* main 함수 호출 */
+  /* Call main function */
   bl    main
 
-  /* main이 리턴되면 무한 루프 */
+  /* Infinite loop if main returns */
 halt_loop:
   b     halt_loop
 
@@ -244,8 +244,8 @@ halt_loop:
 
 /*******************************************************************************
 *
-* 기본 핸들러 (미구현 인터럽트)
-* 모든 정의되지 않은 인터럽트는 여기로 분기하여 무한 루프
+* Default handler (unimplemented interrupts)
+* All undefined interrupts branch here and loop infinitely
 *
 *******************************************************************************/
   .section  .text.Default_Handler,"ax",%progbits
@@ -256,8 +256,8 @@ Infinite_Loop:
 
 /*******************************************************************************
 *
-* Cortex-M4 코어 예외 핸들러 (기본 구현: 무한 루프)
-* 사용자가 stm32g4xx_it.c 에서 재정의 가능
+* Cortex-M4 core exception handlers (default: infinite loop)
+* Users can override in stm32g4xx_it.c
 *
 *******************************************************************************/
   .weak  NMI_Handler
@@ -289,8 +289,8 @@ Infinite_Loop:
 
 /*******************************************************************************
 *
-* 외부 인터럽트 핸들러 (기본 구현: 무한 루프)
-* 사용자가 stm32g4xx_it.c 에서 재정의 가능
+* External interrupt handlers (default: infinite loop)
+* Users can override in stm32g4xx_it.c
 *
 *******************************************************************************/
   .weak  WWDG_IRQHandler

@@ -1,8 +1,8 @@
 /**
  * @file    ota_flash.h
- * @brief   OTA용 flash erase/write 드라이버 (STM32G4)
- * @note    bootloader 없이 "OTA 데이터 영역(0x0801E000~)에 쓰기" 로 시퀀스 검증.
- *          실제 앱 교체/점프는 bootloader 단계(별도 빌드).
+ * @brief   OTA flash erase/write driver (STM32G4)
+ * @note    Sequence verification by "writing to OTA data area (0x0801E000~)" without bootloader.
+ *          Actual app replacement/jump is bootloader phase (separate build).
  */
 #ifndef __OTA_FLASH_H
 #define __OTA_FLASH_H
@@ -13,20 +13,20 @@ extern "C" {
 
 #include "main.h"
 
-/* OTA 데이터 영역 — flash 끝 8KB (앱이 안 쓰는 빈 영역). */
+/* OTA data area -- last 8KB of flash (unused by app). */
 #define OTA_FLASH_BASE   0x0801E000U
 #define OTA_FLASH_END    0x08020000U
 #define OTA_FLASH_SIZE   (OTA_FLASH_END - OTA_FLASH_BASE)   /* 8KB */
 
 /**
- * @brief  page(2KB) 단위 erase
- * @retval 0=성공, -1=범위 초과 또는 실패
+ * @brief  Page (2KB) unit erase
+ * @retval 0=success, -1=out of range or failure
  */
 int ota_flash_erase(uint32_t addr, uint32_t size);
 
 /**
- * @brief  doubleword(8B) 단위 write. 미정렬/잔여 바이트는 무시(시뮬 단순화).
- * @retval 0=성공, -1=범위 초과/실패
+ * @brief  Doubleword (8B) unit write. Unaligned/residual bytes ignored (simulator simplification).
+ * @retval 0=success, -1=out of range or failure
  */
 int ota_flash_write(uint32_t addr, const uint8_t *data, uint32_t len);
 

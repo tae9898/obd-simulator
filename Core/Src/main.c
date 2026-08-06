@@ -1,15 +1,15 @@
 /**
  * @file    main.c
- * @brief   OBD-II ECU 시뮬레이터 메인 루프
- * @note    HAL 초기화, FDCAN/UART 설정, 시뮬레이션 값 주기적 업데이트
- *          STM32G431RB Nucleo 보드용
+ * @brief   OBD-II ECU simulator main loop
+ * @note    HAL initialization, FDCAN/UART configuration, periodic simulation value updates
+ *          For STM32G431RB Nucleo board
  */
 
-/* === 표준 라이브러리 === */
+/* === Standard libraries === */
 #include <stdio.h>
 #include <string.h>
 
-/* === 프로젝트 헤더 === */
+/* === Project headers === */
 #include "main.h"
 #include "obd2_simulator.h"
 #include "fdcan_config.h"
@@ -19,65 +19,65 @@
 #include "diag_session.h"
 #include "rs485.h"
 
-/* === FreeRTOS 헤더 === */
+/* === FreeRTOS headers === */
 #include "FreeRTOS.h"
 #include "task.h"
 
-/* === FDCAN 루프백 진단 모드 (1=테스트 실행, 0=정상 앱) ===
- * MCU FDCAN 주변기기 자체 정상 여부를 검증하는 내부 루프백 테스트.
- * 1로 설정하면 정상 OBD/UDS 앱 대신 루프백 테스트만 실행한다(복귀 안 함).
- * !! 루프백 테스트 결과: MCU FDCAN 정상(PLLQ 클럭 불량이 원인).
- *    현재 앱은 HSE 24MHz + FD_BRS(500k/2M)로 동작(정상 앱 = 0).
+/* === FDCAN loopback diagnostic mode (1=test run, 0=normal app) ===
+ * Internal loopback test to verify MCU FDCAN peripheral is functioning.
+ * Set to 1 to run only the loopback test instead of normal OBD/UDS app (no return).
+ * !! Loopback test result: MCU FDCAN OK (PLLQ clock issue was the cause).
+ *    Current app runs on HSE 24MHz + FD_BRS(500k/2M) (normal app = 0).
  *
- * [BRS 실구현 완료] §7-1~7-4 검증 완료: VCP/Debug_Print 수리(블로킹 전송),
- *    CLASSIC 루프백 PASS, FD_BRS 코어 루프백 PASS, 물리 2Mbps BRS 양방향 통신
- *    성공(UDS 0x10→0x50 positive response). 1=루프백 진단 모드, 0=정상 앱.
+ * [BRS implementation complete] Sections 7-1~7-4 verified: VCP/Debug_Print fixed (blocking TX),
+ *    CLASSIC loopback PASS, FD_BRS core loopback PASS, physical 2Mbps BRS bidirectional
+ *    communication OK (UDS 0x10->0x50 positive response). 1=loopback diagnostic mode, 0=normal app.
  */
 #define RUN_FDCAN_LOOPBACK_TEST 0
 
-/* === per-frame verbose 디버그 (uart_debug.h 의 DEBUG_VERBOSE 참조) ===
- * 매 CAN/ISO-TP 프레임마다 UART 디버그 출력(HAL_UART_Transmit 블로킹, 115200baud
- * 에서 라인당 ~4ms)이 응답 latency의 주된 병목. production/latency 측정 시 0.
- * 초기화·에러·타임아웃 로그는 DEBUG_VERBOSE 와 무관하게 항상 출력.
+/* === Per-frame verbose debug (see DEBUG_VERBOSE in uart_debug.h) ===
+ * UART debug output on every CAN/ISO-TP frame (HAL_UART_Transmit blocking, ~4ms per line
+ * at 115200baud) is the main bottleneck for response latency. Set to 0 for production/latency
+ * measurement. Initialization/error/timeout logs are always output regardless of DEBUG_VERBOSE.
  */
 
 #if RUN_FDCAN_LOOPBACK_TEST
 #include "fdcan_loopback_test.h"
 #endif
 
-/* === 핸들러 전역 변수 === */
-FDCAN_HandleTypeDef hfdcan1;   /* FDCAN1 핸들러 */
-UART_HandleTypeDef  huart2;    /* USART2 핸들러 (디버그) */
-UART_HandleTypeDef  huart1;    /* USART1 핸들러 (RS485) */
+/* === Handler global variables === */
+FDCAN_HandleTypeDef hfdcan1;   /* FDCAN1 handle */
+UART_HandleTypeDef  huart2;    /* USART2 handle (debug) */
+UART_HandleTypeDef  huart1;    /* USART1 handle (RS485) */
 
-/* === 시뮬레이션 상태 전역 변수 === */
+/* === Simulation state global variables === */
 OBD2_SimState_t g_sim_state;
 
-/* === CAN RX Queue (ISR → Task 전달) === */
+/* === CAN RX Queue (ISR -> Task delivery) === */
 QueueHandle_t xCanRxQueue = NULL;
 
-/* === UART Mutex (Debug_Print 스레드 안전성) === */
+/* === UART Mutex (Debug_Print thread safety) === */
 SemaphoreHandle_t xUartMutex = NULL;
 
-/* === RS485 RX Queue (ISR → Task 전달) === */
+/* === RS485 RX Queue (ISR -> Task delivery) === */
 QueueHandle_t xRS485RxQueue = NULL;
 
-/* === IWDG 핸들러 === */
+/* === IWDG handle === */
 IWDG_HandleTypeDef hiwdg;
 
-/* === 태스크 생존 플래그 (IWDG 감시용) === */
+/* === Task alive flags (for IWDG supervision) === */
 volatile uint8_t g_task_alive_flags = 0U;
 
-/* === FDCAN 에러 이벤트 (ISR → Task) === */
+/* === FDCAN error events (ISR -> Task) === */
 volatile uint8_t g_fdcan_busoff_detected = 0U;
 volatile uint8_t g_fdcan_error_flags = 0U;      /* bit0=warning, bit1=passive */
 volatile uint16_t g_fdcan_last_tec = 0U;
 volatile uint16_t g_fdcan_last_rec = 0U;
 
-/* === LED 토글 카운터 === */
+/* === LED toggle counter === */
 static uint32_t s_led_tick_counter = 0;
 
-/* === 함수 프로토타입 === */
+/* === Function prototypes === */
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void vMainTask(void *pvParameters);
@@ -88,12 +88,12 @@ static void ota_stream_sink(ISO_TP_StreamEvent_t event,
                             const uint8_t *data, uint32_t len, uint32_t total_size);
 
 /**
- * @brief  OTA 스트림 싱크 (플레이스홀더)
- * @note   ISO-TP 가 4095바이트 초과 메시지를 수신할 때 CF 청크를 순차 전달.
- *         실제 OTA 에서는 각 청크를 플래시에 순차 기록(erase/program) 하도록
- *         이 본문을 교체. HAL Flash 드라이버(stm32g4xx_hal_flash) 는 빌드에
- *         이미 포함되어 있음. 현재는 BEGIN/END/ERROR 만 로깅 (CF 단위 로깅은
- *         UART 플러딩 방지용 생략).
+ * @brief  OTA stream sink (placeholder)
+ * @note   ISO-TP delivers CF chunks sequentially when receiving messages >4095 bytes.
+ *         For real OTA, replace this body with sequential flash write (erase/program)
+ *         per chunk. HAL Flash driver (stm32g4xx_hal_flash) is already included in
+ *         the build. Currently only logs BEGIN/END/ERROR (per-CF logging omitted to
+ *         prevent UART flooding).
  */
 static void ota_stream_sink(ISO_TP_StreamEvent_t event,
                             const uint8_t *data, uint32_t len, uint32_t total_size)
@@ -113,29 +113,29 @@ static void ota_stream_sink(ISO_TP_StreamEvent_t event,
             break;
         case ISO_TP_STREAM_DATA:
         default:
-            /* CF 단위 로깅 생략 (플러딩 방지) */
+            /* Per-CF logging omitted (prevent flooding) */
             break;
     }
 }
 
 /**
- * @brief  메인 진입점
- * @retval int (0 = 정상)
+ * @brief  Main entry point
+ * @retval int (0 = normal)
  */
 int main(void)
 {
-    /* --- HAL 라이브러리 초기화 --- */
+    /* --- HAL library initialization --- */
     HAL_Init();
 
-    /* --- 시스템 클럭 설정: HSI 16MHz -> PLL -> 170MHz --- */
+    /* --- System clock configuration: HSI 16MHz -> PLL -> 170MHz --- */
     SystemClock_Config();
 
-    /* --- GPIO 초기화 (LED 등) --- */
+    /* --- GPIO initialization (LED, etc.) --- */
     MX_GPIO_Init();
 
-    /* --- USART2 디버그 포트 초기화 --- */
+    /* --- USART2 debug port initialization --- */
     if (UART_DebugInit(&huart2) != HAL_OK) {
-        /* UART 초기화 실패 - LED로 에러 표시 */
+        /* UART initialization failed - indicate error via LED */
         while (1) {
             LED_ON();
             HAL_Delay(100);
@@ -149,22 +149,22 @@ int main(void)
     Debug_Print("[INIT] SYSCLK = %lu MHz\r\n", SYSCLK_FREQ / 1000000U);
 
 #if RUN_FDCAN_LOOPBACK_TEST
-    /* --- FDCAN 내부 루프백 진단 모드: 정상 앱 초기화 생략, 테스트만 실행 --- */
-    FDCAN_LoopbackTest_Run();   /* 복귀하지 않음 (무한 루프) */
+    /* --- FDCAN internal loopback diagnostic mode: skip normal app init, run test only --- */
+    FDCAN_LoopbackTest_Run();   /* Does not return (infinite loop) */
 #endif
 
-    /* --- UDS / 세션 / ISO-TP 초기화 --- */
+    /* --- UDS / session / ISO-TP initialization --- */
     DiagSession_Init();
     UDS_Init();
     ISO_TP_Init();
 
-    /* OTA 스트림 싱크 등록 (>4095바이트 수신 시 CF 청크를 싱크로 전달) */
+    /* Register OTA stream sink (delivers CF chunks to sink when receiving >4095 bytes) */
     ISO_TP_RegisterStreamSink(ota_stream_sink);
 
-    /* --- FDCAN1 초기화 (CAN-FD: 노멀 500kbps / 데이터 2Mbps, BRS) --- */
+    /* --- FDCAN1 initialization (CAN-FD: nominal 500kbps / data 2Mbps, BRS) --- */
     if (FDCAN1_InitFD(&hfdcan1) != HAL_OK) {
         Debug_Print("[ERROR] FDCAN1_InitFD failed\r\n");
-        /* FDCAN 초기화 실패 - LED 빠른 깜빡임 */
+        /* FDCAN initialization failed - LED fast blink */
         while (1) {
             LED_ON();
             HAL_Delay(50);
@@ -173,7 +173,7 @@ int main(void)
         }
     }
 
-    /* --- FDCAN1 필터 설정 (글로벌: 모든 표준 프레임 0x000-0x7FF → RX FIFO0; OBD-II 요청 0x7E0) --- */
+    /* --- FDCAN1 filter configuration (global: all std frames 0x000-0x7FF -> RX FIFO0; OBD-II request 0x7E0) --- */
     if (FDCAN1_ConfigureFilters(&hfdcan1) != HAL_OK) {
         Debug_Print("[ERROR] FDCAN1 filter config failed\r\n");
         while (1) {
@@ -184,13 +184,13 @@ int main(void)
         }
     }
 
-    /* === 글로벌 필터: 모든 표준 프레임 RX FIFO0로 수락 === */
+    /* === Global filter: accept all standard frames into RX FIFO0 === */
     HAL_FDCAN_ConfigGlobalFilter(&hfdcan1,
         FDCAN_ACCEPT_IN_RX_FIFO0, FDCAN_REJECT,
         FDCAN_FILTER_REMOTE, FDCAN_REJECT_REMOTE);
     Debug_Print("[FILTER] Global: all std frames -> RX FIFO0\r\n");
 
-    /* --- FDCAN1 RX 인터럽트 활성화 --- */
+    /* --- FDCAN1 RX interrupt enable --- */
     if (FDCAN1_StartNotification(&hfdcan1) != HAL_OK) {
         Debug_Print("[ERROR] FDCAN1 notification failed\r\n");
         while (1) {
@@ -207,7 +207,7 @@ int main(void)
     Debug_Print("[INIT] UDS Services: 0x10, 0x11, 0x22, 0x27, 0x31\r\n");
     Debug_Print("[INIT] OBD-II PIDs: 0x00, 0x05, 0x0C, 0x0D\r\n");
 
-    /* --- RS485 초기화 (USART1 + MAX485 DE/RE) --- */
+    /* --- RS485 initialization (USART1 + MAX485 DE/RE) --- */
     if (RS485_Init() != HAL_OK) {
         Debug_Print("[ERROR] RS485 init failed\r\n");
         while (1) {
@@ -218,7 +218,7 @@ int main(void)
         }
     }
 
-    /* --- FDCAN1 시작 --- */
+    /* --- FDCAN1 start --- */
     if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK) {
         Debug_Print("[ERROR] FDCAN1 start failed\r\n");
         while (1) {
@@ -229,12 +229,13 @@ int main(void)
         }
     }
 
-    /* --- 진단 통신 준비 완료: SecurityAccess boot-delay 기준점 (M1 수정) --- */
+    /* --- Diagnostic communication ready: SecurityAccess boot-delay baseline (M1 fix) --- */
     DiagSession_MarkBootReady();
 
-    /* --- IWDG 초기화 (독립 워치독, multitask 감시) ---
-     * 모든 태스크(MAIN/CAN_RX/RS485)가 alive 플래그를 세트할 때만 refresh.
-     * 하나라도 멈추면 ~2초 내 리셋. HAL_IWDG_Init 전에 LSI(내부 32kHz) 활성화 필수. */
+    /* --- IWDG initialization (independent watchdog, multitask supervision) ---
+     * Refresh only when all tasks (MAIN/CAN_RX/RS485) have set their alive flags.
+     * If any task stalls, reset within ~2s. LSI (internal 32kHz) must be enabled
+     * before HAL_IWDG_Init. */
 #if 1
     __HAL_RCC_LSI_ENABLE();
     while (__HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) == RESET) { }
@@ -251,22 +252,22 @@ int main(void)
     Debug_Print("[IWDG] DISABLED for debug\r\n");
 #endif
 
-    /* --- 시뮬레이션 상태 초기값 설정 --- */
+    /* --- Simulation state initial values --- */
     g_sim_state.engine_rpm      = RPM_IDLE;
     g_sim_state.coolant_temp    = COOLANT_TEMP_MIN;
     g_sim_state.vehicle_speed   = 0U;
-    g_sim_state.rpm_direction   = 0U;  /* 램프 업 시작 */
-    g_sim_state.temp_direction  = 0U;  /* 증가 시작 */
-    g_sim_state.speed_direction = 0U;  /* 증가 시작 */
+    g_sim_state.rpm_direction   = 0U;  /* Start ramping up */
+    g_sim_state.temp_direction  = 0U;  /* Start increasing */
+    g_sim_state.speed_direction = 0U;  /* Start increasing */
 
-    /* --- 정상 동작 표시: LED 느린 깜빡임 --- */
+    /* --- Normal operation indicator: LED slow blink --- */
     LED_ON();
 
     /* ========================================
-     * FreeRTOS 객체 생성 + 태스크 시작
+     * FreeRTOS object creation + task start
      * ======================================== */
 
-    /* --- CAN RX Queue 생성 --- */
+    /* --- CAN RX Queue creation --- */
     xCanRxQueue = xQueueCreate(CAN_RX_QUEUE_LEN, sizeof(CAN_RxMessage_t));
     if (xCanRxQueue == NULL) {
         Debug_Print("[ERROR] CAN RX Queue create failed\r\n");
@@ -274,7 +275,7 @@ int main(void)
     }
     Debug_Print("[RTOS] CAN RX Queue created (depth=%u)\r\n", CAN_RX_QUEUE_LEN);
 
-    /* --- UART Mutex 생성 (Debug_Print 스레드 안전성) --- */
+    /* --- UART Mutex creation (Debug_Print thread safety) --- */
     xUartMutex = xSemaphoreCreateMutex();
     if (xUartMutex == NULL) {
         Debug_Print("[ERROR] UART Mutex create failed\r\n");
@@ -282,7 +283,7 @@ int main(void)
     }
     Debug_Print("[RTOS] UART Mutex created\r\n");
 
-    /* --- RS485 RX Queue 생성 --- */
+    /* --- RS485 RX Queue creation --- */
     xRS485RxQueue = xQueueCreate(RS485_RX_QUEUE_LEN, sizeof(RS485_RxMessage_t));
     if (xRS485RxQueue == NULL) {
         Debug_Print("[ERROR] RS485 RX Queue create failed\r\n");
@@ -291,23 +292,23 @@ int main(void)
     Debug_Print("[RTOS] RS485 RX Queue created (depth=%u)\r\n", RS485_RX_QUEUE_LEN);
 
     /*
-     * vMainTask: 기존 메인 루프를 태스크로 이동
-     * - 스택: 512 words = 2048 bytes
-     * - 우선순위: 2 (기본 작업)
+     * vMainTask: moved existing main loop to a task
+     * - Stack: 512 words = 2048 bytes
+     * - Priority: 2 (default work)
      */
     xTaskCreate(vMainTask, "Main", 512, NULL, 2, NULL);
 
     /*
-     * vCanRxTask: CAN 수신 메시지를 Queue에서 꺼내서 ISO-TP/UDS 처리
-     * - 스택: 768 words = 3072 bytes (ISO-TP 버퍼 64B + UDS 응답 64B + printf 256B)
-     * - 우선순위: 3 (Main보다 높음 → CAN 메시지 처리 우선)
+     * vCanRxTask: dequeue CAN messages and process ISO-TP/UDS
+     * - Stack: 768 words = 3072 bytes (ISO-TP buffer 64B + UDS response 64B + printf 256B)
+     * - Priority: 3 (higher than Main -> CAN message processing takes priority)
      */
     xTaskCreate(vCanRxTask, "CANRx", 768, NULL, 3, NULL);
 
     /*
-     * vRS485Task: RS485 수신 메시지를 Queue에서 꺼내서 처리
-     * - 스택: 384 words = 1536 bytes
-     * - 우선순위: 2 (Main과 동일, CAN-Rx보다 낮음)
+     * vRS485Task: dequeue RS485 messages and process
+     * - Stack: 384 words = 1536 bytes
+     * - Priority: 2 (same as Main, lower than CAN-Rx)
      */
     xTaskCreate(vRS485Task, "RS485", 384, NULL, 2, NULL);
 
@@ -315,17 +316,16 @@ int main(void)
 
     vTaskStartScheduler();
 
-    /* 스케줄러 시작 실패 시 도달 (heap 부족 등) */
+    /* Reached if scheduler start failed (insufficient heap, etc.) */
     Debug_Print("[ERROR] Scheduler start failed (heap too small?)\r\n");
     while (1);
 }
 
 /**
- * @brief  메인 태스크 - 기존 while(1) 루프와 동일한 동작
+ * @brief  Main task - same behavior as the original while(1) loop
  *
- * @note   vTaskDelay 사용: HAL_Delay와 달리
- *         다른 태스크에게 CPU를 양보함 (논블로킹 대기)
- *         pdMS_TO_TICKS(10) = 10ms를 틱 단위로 변환
+ * @note   Uses vTaskDelay: unlike HAL_Delay, yields CPU to other tasks
+ *         (non-blocking wait). pdMS_TO_TICKS(10) converts 10ms to tick units.
  */
 static void vMainTask(void *pvParameters)
 {
@@ -333,7 +333,7 @@ static void vMainTask(void *pvParameters)
 
     Debug_Print("[RTOS] Main task started\r\n");
 
-    /* --- 클럭 소스 + FDCAN 레지스터 덤프 --- */
+    /* --- Clock source + FDCAN register dump --- */
     {
         uint32_t nbtp = hfdcan1.Instance->NBTP;
         uint32_t nbrp    = ((nbtp >> 16) & 0x1FF) + 1;
@@ -345,45 +345,46 @@ static void vMainTask(void *pvParameters)
                     nbtp, nbrp, ntseg1, ntseg2, nsjw);
         Debug_Print("[CLOCK] Nominal bitrate = %lu bps (expect 500000)\r\n", bitrate);
 
-        /* 실제 FDCAN 클럭 소스 확인 (CCIPR[25:24] FDCANSEL: 0=HSE 1=PLLQ 2=PCLK1) */
+        /* Verify actual FDCAN clock source (CCIPR[25:24] FDCANSEL: 0=HSE 1=PLLQ 2=PCLK1) */
         uint32_t ccipr = RCC->CCIPR;
         uint32_t fdsel = (ccipr >> 24) & 0x3;
         const char *fdsrc = (fdsel == 0U) ? "HSE" : (fdsel == 1U) ? "PLLQ"
                             : (fdsel == 2U) ? "PCLK1" : "reserved";
-        Debug_Print("[CLOCK] CCIPR=0x%08lX FDCANSEL=%s (00=HSE=현재)\r\n",
+        Debug_Print("[CLOCK] CCIPR=0x%08lX FDCANSEL=%s (00=HSE=current)\r\n",
                     ccipr, fdsrc);
 
-        /* PB8(FDCAN1_RX) 실제 GPIO 설정 확인 */
+        /* Verify PB8(FDCAN1_RX) actual GPIO configuration */
         uint32_t moder = (GPIOB->MODER >> 16) & 0x3;   /* PB8: 0=in 1=out 2=AF 3=analog */
         uint32_t afrh  = (GPIOB->AFR[1] >> 0) & 0xF;   /* PB8 AF: 9=FDCAN1 */
         uint32_t pupdr = (GPIOB->PUPDR >> 16) & 0x3;    /* PB8: 0=none 1=PU 2=PD */
         const char *m[] = {"INPUT","OUTPUT","AF","ANALOG"};
-        Debug_Print("[PB8] MODER=%s AFRH=%lu PUPDR=%lu IDR=%lu (AF,AFR=9 이 정상)\r\n",
+        Debug_Print("[PB8] MODER=%s AFRH=%lu PUPDR=%lu IDR=%lu (AF,AFR=9 is correct)\r\n",
                     moder < 4 ? m[moder] : "?", afrh, pupdr,
                     (GPIOB->IDR >> 8) & 0x1);
     }
 
-    /* TX 테스트 없이 수신만 */
+    /* Receive only, no TX test */
     Debug_Print("[LISTEN] Waiting for CAN frames...\r\n");
 
     while (1)
     {
-        /* --- 시뮬레이션 값 업데이트 (10ms 주기) --- */
+        /* --- Update simulation values (10ms period) --- */
         OBD2_UpdateSimValues(&g_sim_state);
 
-        /* --- DTC 상태머신 갱신 (시뮬 값 기반 fault 감지) --- */
+        /* --- DTC state machine update (fault detection based on sim values) --- */
         OBD2_DtcUpdate(&g_sim_state);
 
-        /* --- ISO-TP 타임아웃 처리 --- */
+        /* --- ISO-TP timeout processing --- */
         ISO_TP_Tick(xTaskGetTickCount() * portTICK_PERIOD_MS);
 
-        /* --- 세션 S3 타임아웃 처리 ---
-         * last_activity_tick 은 HAL_GetTick() 기준(SetSession/VerifyKey 에서 갱신).
-         * now 도 HAL_GetTick() 으로 맞춰야 S3 가 정상 동작 (이전 xTaskGetTickCount*period
-         * 기준 불일치 → 0x10 직후에도 타임아웃 오판으로 session DEFAULT 복귀). */
+        /* --- Session S3 timeout processing ---
+         * last_activity_tick is based on HAL_GetTick() (updated in SetSession/VerifyKey).
+         * now must also use HAL_GetTick() so S3 operates correctly (previous
+         * xTaskGetTickCount*period basis mismatch caused false timeout right after
+         * 0x10, forcing session back to DEFAULT). */
         DiagSession_Tick(HAL_GetTick());
 
-        /* --- UDS ECU Reset 처리 --- */
+        /* --- UDS ECU Reset processing --- */
         if (g_soft_reset_requested) {
             g_soft_reset_requested = 0U;
             Debug_Print("[UDS] Soft reset -> NVIC_SystemReset\r\n");
@@ -391,34 +392,34 @@ static void vMainTask(void *pvParameters)
             NVIC_SystemReset();
         }
 
-        /* --- LED 토글 (500ms 주기) --- */
+        /* --- LED toggle (500ms period) --- */
         s_led_tick_counter++;
         if (s_led_tick_counter >= (LED_TOGGLE_PERIOD_MS / SIM_UPDATE_PERIOD_MS)) {
             s_led_tick_counter = 0;
             LED_TOGGLE();
 
-            /* IWDG 리프레시: 모든 태스크 생존 확인 후에만 */
+            /* IWDG refresh: only after confirming all tasks are alive */
             g_task_alive_flags |= TASK_ALIVE_MAIN;
             if ((g_task_alive_flags & TASK_ALIVE_ALL) == TASK_ALIVE_ALL) {
                 HAL_IWDG_Refresh(&hiwdg);
                 g_task_alive_flags = 0U;
             }
-            /* 미확인 태스크가 있으면 리프레시 안 함 → 2초 후 리셋 */
+            /* If any task is unconfirmed, do not refresh -> reset after 2s */
         }
 
-        /* --- FDCAN error-passive 복구: REC>127 이 3초 지속 → Stop/Start 로 카운터 리셋 ---
-         * 부팅 직후 짧은 팬텀이 REC=255 로 고정되어 송신이 막히는 현상 회피. */
+        /* --- FDCAN error-passive recovery: REC>127 sustained for 3s -> Stop/Start to reset counters ---
+         * Workaround for post-boot phantom where REC=255 locks up transmit. */
         {
             static uint32_t rec_check_tick = 0;
             rec_check_tick++;
-            if ((rec_check_tick % 100U) == 0U) {  /* 1초마다 (100 * 10ms) */
+            if ((rec_check_tick % 100U) == 0U) {  /* Every 1s (100 * 10ms) */
                 static uint32_t ep_ticks = 0;
                 uint32_t ecr = hfdcan1.Instance->ECR;
                 uint32_t rec = (ecr >> 8) & 0xFFU;
                 if (rec > 127U) {
                     ep_ticks++;
-                    if (ep_ticks >= 3U) {  /* 3초 지속 */
-                        Debug_Print("[FDCAN-RECOV] REC=%lu 3초 지속 → Stop/Start 리셋\r\n", (unsigned long)rec);
+                    if (ep_ticks >= 3U) {  /* Sustained for 3s */
+                        Debug_Print("[FDCAN-RECOV] REC=%lu sustained 3s -> Stop/Start reset\r\n", (unsigned long)rec);
                         HAL_FDCAN_Stop(&hfdcan1);
                         HAL_FDCAN_Start(&hfdcan1);
                         ep_ticks = 0;
@@ -429,7 +430,7 @@ static void vMainTask(void *pvParameters)
             }
         }
 
-        /* --- FDCAN 에러 로깅 (ISR → 플래그 → 여기서 출력) --- */
+        /* --- FDCAN error logging (ISR -> flags -> output here) --- */
         if (g_fdcan_error_flags != 0U) {
             uint8_t flags = g_fdcan_error_flags;
             g_fdcan_error_flags = 0U;
@@ -443,7 +444,7 @@ static void vMainTask(void *pvParameters)
             }
         }
 
-        /* --- FDCAN 버스오프 복구 (ISR에서 플래그만 설정, 여기서 처리) --- */
+        /* --- FDCAN bus-off recovery (ISR only sets flag, processed here) --- */
         if (g_fdcan_busoff_detected != 0U) {
             g_fdcan_busoff_detected = 0U;
             Debug_Print("[FDCAN-FATAL] Bus-off recovery (task context)...\r\n");
@@ -468,19 +469,19 @@ static void vMainTask(void *pvParameters)
             Debug_Print("[FDCAN-FATAL] Bus-off recovery successful\r\n");
         }
 
-        /* --- 10ms 대기 (다른 태스크에 CPU 양보) --- */
+        /* --- Wait 10ms (yield CPU to other tasks) --- */
         vTaskDelay(pdMS_TO_TICKS(SIM_UPDATE_PERIOD_MS));
     }
 }
 
 /**
- * @brief  CAN 수신 태스크
+ * @brief  CAN receive task
  *
- * Queue에서 CAN 메시지를 꺼내서 ISO-TP → UDS 처리를 수행.
- * 기존에 ISR 안에서 하던 작업을 이 태스크로 이동.
+ * Dequeues CAN messages and performs ISO-TP -> UDS processing.
+ * Moved from ISR to this task.
  *
- * xQueueReceive: Queue에 데이터가 없으면 대기 (CPU 소비 없음)
- *                ISR가 xQueueSendFromISR로 데이터를 넣으면 즉시 깨어남
+ * xQueueReceive: blocks when queue is empty (no CPU consumption)
+ *                Wakes immediately when ISR puts data via xQueueSendFromISR
  */
 static void vCanRxTask(void *pvParameters)
 {
@@ -491,30 +492,30 @@ static void vCanRxTask(void *pvParameters)
 
     while (1)
     {
-        /* 태스크 생존 알림 (항상 설정) */
+        /* Task alive notification (always set) */
         g_task_alive_flags |= TASK_ALIVE_CAN_RX;
 
-        /* Queue에서 메시지 대기 (100ms 타임아웃, IWDG 리프레시 위해) */
+        /* Wait for message from queue (100ms timeout, for IWDG refresh) */
         if (xQueueReceive(xCanRxQueue, &rx_msg, pdMS_TO_TICKS(100)) == pdTRUE) {
-            /* 수신된 CAN 프레임 즉시 출력 (최대 64바이트까지, 디버그) */
+            /* Output received CAN frame immediately (up to 64 bytes, debug) */
 #if DEBUG_VERBOSE
             Debug_LogCAN_Rx(rx_msg.can_id, rx_msg.data, rx_msg.dlc);
 #endif
 
-            /* ISO-TP → UDS 처리 (응답 송신) */
+            /* ISO-TP -> UDS processing (transmit response) */
             ISO_TP_ProcessFrame(rx_msg.can_id, rx_msg.data, rx_msg.dlc);
 
-            /* CAN→RS485 포워딩 (RPi4로 전달) */
+            /* CAN->RS485 forwarding (deliver to RPi4) */
             RS485_ForwardCANMessage(rx_msg.can_id, rx_msg.data, rx_msg.dlc);
         }
     }
 }
 
 /**
- * @brief  RS485 수신 태스크
+ * @brief  RS485 receive task
  *
- * Queue에서 RS485 메시지를 꺼내서 처리.
- * 향후 CAN↔RS485 메시지 라우팅 로직이 여기에 추가됨.
+ * Dequeues RS485 messages and processes them.
+ * Future CAN<->RS485 message routing logic will be added here.
  */
 static void vRS485Task(void *pvParameters)
 {
@@ -525,18 +526,18 @@ static void vRS485Task(void *pvParameters)
 
     while (1)
     {
-        /* 태스크 생존 알림 (항상 설정) */
+        /* Task alive notification (always set) */
         g_task_alive_flags |= TASK_ALIVE_RS485;
 
         if (xQueueReceive(xRS485RxQueue, &rx_msg, pdMS_TO_TICKS(100)) == pdTRUE) {
 
-            /* 최소 프레임 길이 확인: ID(2) + DLC(1) = 3바이트 */
+            /* Minimum frame length check: ID(2) + DLC(1) = 3 bytes */
             if (rx_msg.len >= 3U) {
                 uint32_t can_id = ((uint32_t)rx_msg.data[0] << 8) | (uint32_t)rx_msg.data[1];
                 uint8_t  dlc    = rx_msg.data[2];
 
                 if (dlc <= 64U && (3U + dlc) <= rx_msg.len) {
-                    /* RS485→CAN 포워딩 (Classic CAN — CANable 호환) */
+                    /* RS485->CAN forwarding (Classic CAN - CANable compatible) */
                     FDCAN_TxHeaderTypeDef tx_header = {0};
                     tx_header.Identifier          = can_id;
                     tx_header.IdType              = FDCAN_STANDARD_ID;
@@ -548,9 +549,9 @@ static void vRS485Task(void *pvParameters)
                     tx_header.MessageMarker       = 0U;
                     tx_header.DataLength          = FDCAN_BytesToDlc(dlc);
 
-                    /* CAN-FD 프레임의 HAL 전송은 round-up된 DLC 만큼 읽으므로
-                     * 64바이트 버퍼에 복사 + 패딩(0xCC) 후 전송. stale 버퍼
-                     * 잔여 바이트가 버스로 새어나가는 것을 방지. */
+                    /* HAL CAN-FD transmit reads the rounded-up DLC worth of bytes, so
+                     * copy to 64-byte buffer + pad (0xCC) before transmit. Prevents stale
+                     * buffer residual bytes from leaking onto the bus. */
                     uint8_t tx_data[64];
                     (void)memset(tx_data, 0xCCU, sizeof(tx_data));
                     for (uint8_t i = 0U; i < dlc; i++) {
@@ -558,7 +559,7 @@ static void vRS485Task(void *pvParameters)
                     }
 
                     if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx_header, tx_data) == HAL_OK) {
-                        Debug_Print("[ROUTE] RS485→CAN ID:0x%03lX DLC:%u (FD)\r\n", can_id, dlc);
+                        Debug_Print("[ROUTE] RS485->CAN ID:0x%03lX DLC:%u (FD)\r\n", can_id, dlc);
                     }
                 }
             }
@@ -567,33 +568,33 @@ static void vRS485Task(void *pvParameters)
 }
 
 /* ====================================================
- * 에러 핸들러 + HAL 콜백
+ * Error handlers + HAL callbacks
  * ==================================================== */
 
 /**
- * @brief  Safe State 진입 (치명적 에러 시)
- * @param  msg: 에러 메시지
+ * @brief  Enter Safe State (on fatal error)
+ * @param  msg: error message
  *
- * @note   안전 상태:
- *         1. FDCAN 정지 (CAN 버스에 잘못된 데이터 송신 방지)
- *         2. RS485 DE/RE LOW (수신 모드로 전환, 버스 충돌 방지)
- *         3. 에러 메시지 출력
- *         4. LED 빠른 깜빡임
- *         5. IWDG 리프레시 안 함 → 2초 후 시스템 리셋
+ * @note   Safe state procedure:
+ *         1. Stop FDCAN (prevent transmitting invalid data on CAN bus)
+ *         2. RS485 DE/RE LOW (switch to receive mode, prevent bus collision)
+ *         3. Output error message
+ *         4. LED fast blink
+ *         5. No IWDG refresh -> system reset after 2s
  */
 static void Error_Handler_EnterSafeState(const char *msg)
 {
-    /* CAN 컨트롤러 정지 */
+    /* Stop CAN controller */
     (void)HAL_FDCAN_Stop(&hfdcan1);
 
-    /* RS485 수신 모드 전환 */
+    /* Switch RS485 to receive mode */
     RS485_DE_LOW();
 
-    /* 에러 로깅 */
+    /* Error logging */
     Debug_Print("[SAFE-STATE] %s\r\n", msg);
     Debug_Print("[SAFE-STATE] Waiting for IWDG reset...\r\n");
 
-    /* LED 빠른 깜빡임 + IWDG 리프레시 안 함 → 2초 후 리셋 */
+    /* LED fast blink + no IWDG refresh -> reset after 2s */
     while (1) {
         LED_ON();
         HAL_Delay(50);
@@ -603,9 +604,9 @@ static void Error_Handler_EnterSafeState(const char *msg)
 }
 
 /**
- * @brief  FDCAN 에러 상태 콜백 (Warning / Passive)
- * @note   ISR 컨텍스트에서 호출 → 플래그만 설정 (Debug_Print 금지!)
- *         실제 로깅은 vMainTask에서 처리
+ * @brief  FDCAN error status callback (Warning / Passive)
+ * @note   Called from ISR context -> only set flags (no Debug_Print!)
+ *         Actual logging is handled in vMainTask
  */
 void HAL_FDCAN_ErrorStatusCallback(FDCAN_HandleTypeDef *hfdcan,
                                     uint32_t ErrorStatusITs)
@@ -624,9 +625,9 @@ void HAL_FDCAN_ErrorStatusCallback(FDCAN_HandleTypeDef *hfdcan,
 }
 
 /**
- * @brief  FDCAN 버스오프 콜백
- * @note   ISR 컨텍스트에서 호출됨 → 플래그만 설정.
- *         실제 복구는 vMainTask에서 처리 (무거운 작업은 태스크에서).
+ * @brief  FDCAN bus-off callback
+ * @note   Called from ISR context -> only set flag.
+ *         Actual recovery is handled in vMainTask (heavy work belongs in a task).
  */
 void HAL_FDCAN_ErrorCallback(FDCAN_HandleTypeDef *hfdcan)
 {
@@ -635,16 +636,16 @@ void HAL_FDCAN_ErrorCallback(FDCAN_HandleTypeDef *hfdcan)
 }
 
 /**
- * @brief  UART 에러 콜백 (프레이밍/오버런/노이즈)
- * @note   USART1 (RS485): 에러 플래그 클리어 + RX 재시작
- *         USART2 (Debug): 에러 로깅만 (ST-LINK는 안정적)
+ * @brief  UART error callback (framing/overrun/noise)
+ * @note   USART1 (RS485): clear error flags + restart RX
+ *         USART2 (Debug): logging only (ST-LINK is stable)
  */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
     uint32_t error = huart->ErrorCode;
 
     if (huart->Instance == USART1) {
-        /* RS485 UART 에러 */
+        /* RS485 UART error */
         if ((error & HAL_UART_ERROR_FE) != 0U) {
             Debug_Print("[RS485-ERR] Framing error (check baudrate/wiring)\r\n");
         }
@@ -655,28 +656,28 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
             Debug_Print("[RS485-ERR] Noise error\r\n");
         }
 
-        /* 오버런 플래그 클리어 (필수, 안 하면 RX 멈춤) */
+        /* Clear overrun flag (required, otherwise RX halts) */
         __HAL_UART_CLEAR_OREFLAG(huart);
 
-        /* 1바이트 수신 재시작 */
+        /* Restart 1-byte receive */
         RS485_RestartReceive();
     }
     else if (huart->Instance == USART2) {
-        /* Debug UART: 로깅만 */
+        /* Debug UART: logging only */
         Debug_Print("[UART2-ERR] Error code: 0x%08lX\r\n", error);
         __HAL_UART_CLEAR_OREFLAG(huart);
     }
 }
 
 /* ====================================================
- * FreeRTOS 훅 함수 (FreeRTOSConfig.h에서 활성화)
+ * FreeRTOS hook functions (enabled in FreeRTOSConfig.h)
  * ==================================================== */
 
 /**
- * @brief  스택 오버플로우 감지 시 호출
- * @note   configCHECK_FOR_STACK_OVERFLOW = 2 로 활성화됨
- *         태스크 스택이 부족하면 여기서 걸림
- *         → 해당 태스크의 스택 크기를 늘려야 함
+ * @brief  Called on stack overflow detection
+ * @note   Enabled with configCHECK_FOR_STACK_OVERFLOW = 2
+ *         Triggers here when task stack is insufficient
+ *         -> increase the affected task's stack size
  */
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
 {
@@ -687,9 +688,9 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
 }
 
 /**
- * @brief  pvPortMalloc 실패 시 호출
- * @note   configTOTAL_HEAP_SIZE가 부족하면 발생
- *         → configTOTAL_HEAP_SIZE 증가 또는 태스크/큐 수 감소
+ * @brief  Called on pvPortMalloc failure
+ * @note   Occurs when configTOTAL_HEAP_SIZE is insufficient
+ *         -> increase configTOTAL_HEAP_SIZE or reduce tasks/queues
  */
 void vApplicationMallocFailedHook(void)
 {
@@ -699,13 +700,13 @@ void vApplicationMallocFailedHook(void)
 }
 
 /**
- * @brief  시스템 클럭 설정
+ * @brief  System clock configuration
  * @note   HSI 16MHz -> PLL -> SYSCLK 170MHz
  *         - PLLM = 4  (HSI/4 = 4MHz)
  *         - PLLN = 85 (4MHz * 85 = 340MHz VCO)
  *         - PLLP = 2  (340MHz / 2 = 170MHz SYSCLK)
- *         - PLLQ = 2  (340MHz / 2 = 170MHz, FDCAN 미사용 - 현재 HSE 사용)
- *         - PLLR = 2  (340MHz / 2 = 170MHz, SYSCLK용)
+ *         - PLLQ = 2  (340MHz / 2 = 170MHz, FDCAN unused - currently using HSE)
+ *         - PLLR = 2  (340MHz / 2 = 170MHz, for SYSCLK)
  *         - AHB prescaler = 1  -> HCLK = 170MHz
  *         - APB1 prescaler = 4 -> PCLK1 = 42.5MHz
  *         - APB2 prescaler = 2 -> PCLK2 = 85MHz
@@ -715,11 +716,11 @@ void SystemClock_Config(void)
     RCC_OscInitTypeDef        RCC_OscInitStruct = {0};
     RCC_ClkInitTypeDef        RCC_ClkInitStruct = {0};
 
-    /** 1. 전원 설정: Scale 1 모드 (170MHz 동작에 필요) */
+    /** 1. Power configuration: Scale 1 mode (required for 170MHz operation) */
     HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1);
 
-    /** 2. RCC 발진기 설정: HSI(SYSCLK/PLL 170MHz용) + HSE(FDCAN 2M BRS용).
-     *     HSE 24MHz 크리스탈 정상 발진 확인됨(SWD HSERDY 실측, 핸드오프 §1 정정). */
+    /** 2. RCC oscillator configuration: HSI (for SYSCLK/PLL 170MHz) + HSE (for FDCAN 2M BRS).
+     *     HSE 24MHz crystal confirmed oscillating (SWD HSERDY verified, handoff section 1 correction). */
     RCC_OscInitStruct.OscillatorType      = RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_HSE;
     RCC_OscInitStruct.HSEState            = RCC_HSE_ON;
     RCC_OscInitStruct.HSIState            = RCC_HSI_ON;
@@ -732,11 +733,11 @@ void SystemClock_Config(void)
     RCC_OscInitStruct.PLL.PLLQ            = RCC_PLLQ_DIV2;  /* 340/2 = 170MHz */
     RCC_OscInitStruct.PLL.PLLR            = RCC_PLLR_DIV2;  /* 340/2 = 170MHz */
     if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
-        /* 클럭 설정 실패 - 무한 루프 */
+        /* Clock configuration failed - infinite loop */
         while (1);
     }
 
-    /** 3. CPU, AHB, APB 버스 클럭 설정 */
+    /** 3. CPU, AHB, APB bus clock configuration */
     RCC_ClkInitStruct.ClockType      = RCC_CLOCKTYPE_HCLK   | RCC_CLOCKTYPE_SYSCLK
                                      | RCC_CLOCKTYPE_PCLK1  | RCC_CLOCKTYPE_PCLK2;
     RCC_ClkInitStruct.SYSCLKSource   = RCC_SYSCLKSOURCE_PLLCLK;
@@ -745,16 +746,16 @@ void SystemClock_Config(void)
     RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;       /* PCLK2 = 85MHz */
 
     /**
-     * Flash 대기 상태 설정:
-     * 170MHz >= 150MHz 이므로 WS = 4 (2.7V~3.6V, Scale 1 기준)
+     * Flash wait state configuration:
+     * 170MHz >= 150MHz so WS = 4 (2.7V~3.6V, Scale 1 reference)
      */
     if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK) {
         while (1);
     }
 
-    /** 4. FDCAN 클럭 소스 설정: HSE (24MHz) — CAN-FD 2Mbps BRS용.
-     *  @note  24MHz/2MHz = 12 TQ (정수 분주, SP 83.3%). PCLK1 42.5MHz는 2M이
-     *         21.25로 안 떨어져 BRS 불량. CCIPR[25:24]=00 -> HSE. */
+    /** 4. FDCAN clock source configuration: HSE (24MHz) -- for CAN-FD 2Mbps BRS.
+     *  @note  24MHz/2Mbps = 12 TQ (integer division, SP 83.3%). PCLK1 42.5MHz does not
+     *         divide evenly to 2M (21.25), causing BRS issues. CCIPR[25:24]=00 -> HSE. */
     RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
     PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_FDCAN;
     PeriphClkInit.FdcanClockSelection   = RCC_FDCANCLKSOURCE_HSE;
@@ -764,23 +765,23 @@ void SystemClock_Config(void)
 }
 
 /**
- * @brief  GPIO 초기화
- * @note   LD4 LED (PA5) 출력 설정, 활성 Low
+ * @brief  GPIO initialization
+ * @note   LD4 LED (PA5) output configuration, active Low
  */
 static void MX_GPIO_Init(void)
 {
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-    /* GPIO 클럭 활성화 */
+    /* Enable GPIO clock */
     __HAL_RCC_GPIOA_CLK_ENABLE();
 
-    /* LD4 LED (PA5) 설정: 출력, 푸시풀, 저속, 초기 상태 OFF */
+    /* LD4 LED (PA5) configuration: output, push-pull, low speed, initial state OFF */
     GPIO_InitStruct.Pin   = LED_PIN;
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull  = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(LED_PORT, &GPIO_InitStruct);
 
-    /* LED 초기 상태: OFF */
+    /* LED initial state: OFF */
     LED_OFF();
 }

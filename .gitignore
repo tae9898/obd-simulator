@@ -1,7 +1,7 @@
-# 빌드 산출물
+# Build artifacts
 build/
 
-# HAL 드라이버 (ST 공식 저장소에서 clone)
+# HAL driver (cloned from official ST repository)
 Drivers/STM32G4xx_HAL_Driver/
 Drivers/CMSIS/Device/ST/STM32G4xx/
 Drivers/BSP/
@@ -19,17 +19,17 @@ Drivers/CMSIS/*.pdsc
 Drivers/CMSIS/LICENSE.txt
 Drivers/CMSIS/README.md
 
-# IDE 설정
+# IDE settings
 .vscode/
 .idea/
 *.swp
 *~
 
-# OS 파일
+# OS files
 .DS_Store
 Thumbs.db
 
-# 바이너리
+# Binaries
 *.o
 *.d
 *.elf
@@ -38,9 +38,9 @@ Thumbs.db
 *.map
 *.asm
 
-# OMC 상태 파일
+# OMC state files
 .omc/
 
-# Python 캐시
+# Python cache
 __pycache__/
 *.pyc

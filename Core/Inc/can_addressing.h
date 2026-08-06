@@ -1,21 +1,21 @@
 /**
  * @file    can_addressing.h
- * @brief   CAN 어드레싱 계층 — 물리적(Physical) vs 기능적(Functional) 주소 구분
- * @note    ISO 15765-2 / ISO 14229-1 (11-bit 표준 ID) 기반
+ * @brief   CAN addressing layer -- Physical vs Functional address distinction
+ * @note    ISO 15765-2 / ISO 14229-1 (11-bit standard ID) based
  *
- * 왜 필요한가:
- *   수신 CAN ID만으로 이 프레임이
- *     (1) 이 노드를 1:1 로 지정한 물리적 요청(0x7E0~0x7E7),
- *     (2) 모든 ECU 에 대한 기능적 브로드캐스트(0x7DF),
- *     (3) 이 노드와 무관한 트래픽(그 외)
- *   인지 구분해야 응답 ID 계산과 서비스별 응답 억제 정책을 올바르게 적용할 수 있다.
+ * Why needed:
+ *   From the received CAN ID alone, we must determine whether this frame is
+ *     (1) a physical request targeting this node 1:1 (0x7E0~0x7E7),
+ *     (2) a functional broadcast to all ECUs (0x7DF),
+ *     (3) unrelated traffic (anything else)
+ *   to correctly compute the response ID and apply per-service response suppression policy.
  *
- *   기능적 요청(0x7DF) 응답 ID = 이 노드의 물리적 응답 ID (0x7E8).
- *   (단순히 0x7DF+8=0x7E7 로 보내면 안 됨.)
+ *   Functional request (0x7DF) response ID = this node's physical response ID (0x7E8).
+ *   (Must not simply send to 0x7DF+8=0x7E7.)
  *
- * 멀티-ECU 확장:
- *   노드 물리적 주소는 아래 매크로 3개로 컴파일타임에 결정된다.
- *   다른 ECU 슬롯(예: 0x7E2/0x7EA)을 사용하려면 이 헤더 한 곳만 수정.
+ * Multi-ECU extension:
+ *   Node physical address is determined at compile time by the 3 macros below.
+ *   To use a different ECU slot (e.g. 0x7E2/0x7EA), modify only this header.
  */
 
 #ifndef __CAN_ADDRESSING_H
@@ -27,28 +27,28 @@ extern "C" {
 
 #include "main.h"
 
-/* === 노드 CAN ID (컴파일타임 매크로) ===
+/* === Node CAN IDs (compile-time macros) ===
  * ISO 15765-2 11-bit canonical addressing:
- *   기능적 요청 0x7DF (브로드캐스트)
- *   물리적 요청 0x7E0~0x7E7, 물리적 응답 0x7E8~0x7EF (ECU별 1쌍)
- * 이 노드 기본 배정: 요청 0x7E0 / 응답 0x7E8
+ *   Functional request 0x7DF (broadcast)
+ *   Physical request 0x7E0~0x7E7, physical response 0x7E8~0x7EF (one pair per ECU)
+ * This node default assignment: request 0x7E0 / response 0x7E8
  */
-#define CAN_ID_FUNCTIONAL_REQ    0x7DFU   /**< 기능적 요청 (모든 ECU 대상 브로드캐스트) */
-#define CAN_ID_PHYSICAL_REQ      0x7E0U   /**< 이 노드 물리적 요청 */
-#define CAN_ID_PHYSICAL_RESP     0x7E8U   /**< 이 노드 물리적 응답 */
+#define CAN_ID_FUNCTIONAL_REQ    0x7DFU   /**< Functional request (broadcast to all ECUs) */
+#define CAN_ID_PHYSICAL_REQ      0x7E0U   /**< This node physical request */
+#define CAN_ID_PHYSICAL_RESP     0x7E8U   /**< This node physical response */
 
-/* === 어드레싱 타입 === */
+/* === Addressing types === */
 typedef enum {
-    ADDR_IGNORE    = 0,   /**< 이 노드 대상 아님 → 무시 */
-    ADDR_PHYSICAL  = 1,   /**< 물리적 요청 (1:1, 0x7E0) */
-    ADDR_FUNCTIONAL = 2   /**< 기능적 요청 (브로드캐스트, 0x7DF) */
+    ADDR_IGNORE    = 0,   /**< Not targeting this node -> ignore */
+    ADDR_PHYSICAL  = 1,   /**< Physical request (1:1, 0x7E0) */
+    ADDR_FUNCTIONAL = 2   /**< Functional request (broadcast, 0x7DF) */
 } AddrType_t;
 
 /**
- * @brief  수신 CAN ID → 어드레싱 타입 분류
- * @param  can_id: 수신 표준 CAN ID
+ * @brief  Received CAN ID -> addressing type classification
+ * @param  can_id: received standard CAN ID
  * @retval ADDR_PHYSICAL / ADDR_FUNCTIONAL / ADDR_IGNORE
- * @note   ISO-TP/UDS 처리 전 1차 필터로 사용. ADDR_IGNORE 는 상위 계층이 무시.
+ * @note   Used as primary filter before ISO-TP/UDS processing. Upper layer ignores ADDR_IGNORE.
  */
 static inline AddrType_t CAN_Addr_Classify(uint32_t can_id)
 {

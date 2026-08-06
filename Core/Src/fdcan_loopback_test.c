@@ -1,17 +1,17 @@
 /**
  * @file    fdcan_loopback_test.c
- * @brief   FDCAN1 내부 루프백 진단 테스트 구현 (rev2)
- * @note    STM32G431RB — MCU FDCAN 주변기기 자체 검증.
+ * @brief   FDCAN1 internal loopback diagnostic test implementation (rev2)
+ * @note    STM32G431RB -- MCU FDCAN peripheral self-verification.
  *
- *          <중요 정정 (rev2)>
- *          STM32G4 FDCAN의 메시지 RAM 은 하드웨어 고정(RX FIFO0=3, TX FIFO=3 등)
- *          이며 RXF0C/RXF1C/TXBC 크기 필드 같은 설정 레지스터는 존재하지 않는다.
- *          (RXF0S@0x090, TXBC@0x0C0, TXFQS@0x0C4 등은 CMSIS 구조체 멤버 사용)
- *          따라서 "FIFO 깊이 0" 진단은 오판이었고, 실제 현상은
- *          "메시지가 TX FIFO(깊이 3)에 큐잉되지만 전송되지 않음(LEC=7)" 이다.
+ *          <Important correction (rev2)>
+ *          STM32G4 FDCAN message RAM is hardware-fixed (RX FIFO0=3, TX FIFO=3, etc.)
+ *          and configuration registers like RXF0C/RXF1C/TXBC size fields do not exist.
+ *          (RXF0S@0x090, TXBC@0x0C0, TXFQS@0x0C4, etc. use CMSIS struct members)
+ *          Therefore "FIFO depth 0" diagnosis was a misjudgment; the actual symptom was
+ *          "message queued in TX FIFO (depth 3) but not transmitted (LEC=7)".
  *
- *          본 rev2 에서는 FDCAN 코어 클럭(RCC FDCANSEL/PLLRDY/HSERDY) 과
- *          TX 요청 상태(TXBAR/TXBRP/TXBTO) 를 정확한 오프셋으로 점검한다.
+ *          This rev2 checks the FDCAN core clock (RCC FDCANSEL/PLLRDY/HSERDY) and
+ *          TX request status (TXBAR/TXBRP/TXBTO) at correct offsets.
  */
 
 #include "fdcan_loopback_test.h"
@@ -19,24 +19,24 @@
 #include "stm32g4xx_hal.h"
 #include <string.h>
 
-/* === 테스트용 TX 프레임 === */
+/* === TX frame for testing === */
 #define LB_TX_ID    0x123U
 #define LB_TX_DLC   FDCAN_DLC_BYTES_8
 
-/* === 타이밍 === */
+/* === Timing === */
 #define LB_RX_POLL_TIMEOUT_MS  100U
 #define LB_LOOP_PERIOD_MS      1000U
 
 /* ------------------------------------------------------------------ *
- *  설정/클럭/TX 상태 점검
+ *  Configuration/clock/TX status checks
  * ------------------------------------------------------------------ */
 
 /**
- * @brief  FDCAN 클럭 소스 + 발진기/PLL 준비 상태 + 코어 레지스터 요약
- * @note   FDCANSEL 위치는 CCIPR[25:24] (0=HSE,1=PLLQ,2=PCLK1).
- *         FDCAN 코어(프로토콜 엔진)는 FDCANSEL 클럭으로 동작한다.
- *         레지스터는 APB 클럭으로 접근되므로, 코어 클럭이 죽어도
- *         레지스터 읽기는 되지만 TX 는 일어나지 않는다(LEC=7).
+ * @brief  FDCAN clock source + oscillator/PLL ready state + core register summary
+ * @note   FDCANSEL location is CCIPR[25:24] (0=HSE,1=PLLQ,2=PCLK1).
+ *         The FDCAN core (protocol engine) runs on the FDCANSEL clock.
+ *         Registers are accessed via APB clock, so even if core clock is dead,
+ *         register reads still work but TX will not occur (LEC=7).
  */
 static void lb_dump_clock_and_core(const char *tag)
 {
@@ -82,7 +82,7 @@ static void lb_dump_clock_and_core(const char *tag)
 }
 
 /* ------------------------------------------------------------------ *
- *  메인 진입
+ *  Main entry
  * ------------------------------------------------------------------ */
 
 void FDCAN_LoopbackTest_Run(void)
@@ -95,9 +95,9 @@ void FDCAN_LoopbackTest_Run(void)
     Debug_Print("# Tests MCU FDCAN core ONLY (no transceiver/wiring)   #\r\n");
     Debug_Print("######################################################\r\n");
 
-    /* --- FDCAN1 초기화: INTERNAL LOOPBACK --- */
+    /* --- FDCAN1 initialization: INTERNAL LOOPBACK --- */
     hfdcan1.Instance                 = FDCAN1;
-    hfdcan1.Init.FrameFormat         = FDCAN_FRAME_FD_BRS;  /* CAN-FD + 비트레이트 스위칭 */
+    hfdcan1.Init.FrameFormat         = FDCAN_FRAME_FD_BRS;  /* CAN-FD + bitrate switching */
     hfdcan1.Init.Mode                = FDCAN_MODE_INTERNAL_LOOPBACK;
     hfdcan1.Init.AutoRetransmission  = ENABLE;
     hfdcan1.Init.TransmitPause       = DISABLE;
@@ -114,13 +114,13 @@ void FDCAN_LoopbackTest_Run(void)
     hfdcan1.Init.ExtFiltersNbr       = 0U;
     hfdcan1.Init.TxFifoQueueMode     = FDCAN_TX_FIFO_OPERATION;
 
-    /* === FDCAN 클럭 소스 안내 (SystemClock_Config 가 설정한 값을 그대로 사용) ===
-     * !! 검증 결과: 본 보드에서 PLLQ->FDCAN 클럭이 동작하지 않는다.
-     *    - PLLQ(CCIPR FDCANSEL=01): TX 미발생, LEC=7, 루프백 FAIL
-     *    - PCLK1 (=10)          : 루프백 PASS
-     *    - HSE  (=00)           : FD_BRS 2Mbps 루프백 PASS   <-- 현재 앱 기본값
-     * SystemClock_Config 가 HSE 를 설정하므로 여기서 강제 변경하지 않는다.
-     * (과거 A/B 실험용: MODIFY_REG(RCC->CCIPR, RCC_CCIPR_FDCANSEL, RCC_FDCANCLKSOURCE_HSE/PCLK1);)
+    /* === FDCAN clock source note (uses value set by SystemClock_Config as-is) ===
+     * !! Verification result: PLLQ->FDCAN clock does not work on this board.
+     *    - PLLQ (CCIPR FDCANSEL=01): no TX, LEC=7, loopback FAIL
+     *    - PCLK1 (=10)          : loopback PASS
+     *    - HSE  (=00)           : FD_BRS 2Mbps loopback PASS   <-- current app default
+     * SystemClock_Config sets HSE, so we do not force-change it here.
+     * (past A/B experiment: MODIFY_REG(RCC->CCIPR, RCC_CCIPR_FDCANSEL, RCC_FDCANCLKSOURCE_HSE/PCLK1);)
      */
 
     status = HAL_FDCAN_Init(&hfdcan1);
@@ -133,12 +133,12 @@ void FDCAN_LoopbackTest_Run(void)
 
     lb_dump_clock_and_core("after-INIT");
 
-    /* --- 글로벌 필터: 모든 표준 프레임 -> RX FIFO0 --- */
+    /* --- Global filter: all standard frames -> RX FIFO0 --- */
     HAL_FDCAN_ConfigGlobalFilter(&hfdcan1,
                                  FDCAN_ACCEPT_IN_RX_FIFO0, FDCAN_REJECT,
                                  FDCAN_FILTER_REMOTE, FDCAN_REJECT_REMOTE);
 
-    /* --- 표준 필터 0: range 0x000~0x7FF 전체 -> RX FIFO0 --- */
+    /* --- Standard filter 0: range 0x000~0x7FF all -> RX FIFO0 --- */
     {
         FDCAN_FilterTypeDef f = {0};
         f.IdType       = FDCAN_STANDARD_ID;
@@ -157,7 +157,7 @@ void FDCAN_LoopbackTest_Run(void)
         while (1) { LED_TOGGLE(); HAL_Delay(100); }
     }
 
-    /* --- TX 프레임 헤더 --- */
+    /* --- TX frame header --- */
     FDCAN_TxHeaderTypeDef tx_hdr = {0};
     tx_hdr.Identifier          = LB_TX_ID;
     tx_hdr.IdType              = FDCAN_STANDARD_ID;
@@ -169,7 +169,7 @@ void FDCAN_LoopbackTest_Run(void)
     tx_hdr.MessageMarker       = 0U;
     tx_hdr.DataLength          = LB_TX_DLC;
 
-    Debug_Print("[LB] Loop: TX ID=0x%03lX / %lums. PASS=core OK, FAIL=core/clock 문제.\r\n\r\n",
+    Debug_Print("[LB] Loop: TX ID=0x%03lX / %lums. PASS=core OK, FAIL=core/clock issue.\r\n\r\n",
                 (unsigned long)LB_TX_ID, (unsigned long)LB_LOOP_PERIOD_MS);
 
     uint32_t round = 0U, pass_cnt = 0U, fail_cnt = 0U;
@@ -182,11 +182,11 @@ void FDCAN_LoopbackTest_Run(void)
 
         HAL_StatusTypeDef tx_st = HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &tx_hdr, tx_data);
 
-        /* TX 상태 스냅샷 (TX 직후) */
+        /* TX status snapshot (immediately after TX) */
         uint32_t txfqs_pre = hfdcan1.Instance->TXFQS;
         uint32_t txbar_pre = hfdcan1.Instance->TXBAR;
 
-        /* RX 폴링 */
+        /* RX polling */
         uint8_t got = 0U;
         uint32_t t0 = HAL_GetTick();
         uint32_t elapsed = 0U;
@@ -219,28 +219,28 @@ void FDCAN_LoopbackTest_Run(void)
                             (unsigned long)elapsed);
                 if (id_ok && data_ok) {
                     pass_cnt++;
-                    Debug_Print("[LB]   >>>> PASS: loopback OK. MCU FDCAN 코어 정상. <<<<\r\n");
+                    Debug_Print("[LB]   >>>> PASS: loopback OK. MCU FDCAN core normal. <<<<\r\n");
                 } else {
                     fail_cnt++;
-                    Debug_Print("[LB]   !!!! FAIL: 수신했지만 불일치(id_ok=%d data_ok=%d) !!!!\r\n", id_ok, data_ok);
+                    Debug_Print("[LB]   !!!! FAIL: received but mismatch (id_ok=%d data_ok=%d) !!!!\r\n", id_ok, data_ok);
                 }
             } else {
                 fail_cnt++;
-                Debug_Print("[LB]   !!!! FAIL: F0FL>0 인데 GetRxMessage 실패 !!!!\r\n");
+                Debug_Print("[LB]   !!!! FAIL: F0FL>0 but GetRxMessage failed !!!!\r\n");
             }
         } else {
             fail_cnt++;
             if (tx_st != HAL_OK) {
-                Debug_Print("[LB]   !!!! FAIL: AddTx=%d (TX FIFO 가득=깊이3 꽉참, 전송 안 됨) !!!!\r\n", tx_st);
+                Debug_Print("[LB]   !!!! FAIL: AddTx=%d (TX FIFO full=depth3 full, not transmitted) !!!!\r\n", tx_st);
             } else {
-                Debug_Print("[LB]   !!!! FAIL: TX 큐잉됐으나 100ms 내 RX 없음(전송 안 됨, LEC 확인) !!!!\r\n");
+                Debug_Print("[LB]   !!!! FAIL: TX queued but no RX within 100ms (not transmitted, check LEC) !!!!\r\n");
             }
-            /* TXBAR set 되었는데 TXBTO 안 뜨면 -> 코어가 전송 안 함 = 클럭/코어 문제 */
-            Debug_Print("[LB]        TXBAR=0x%lX TXBRP=0x%lX TXBTO=0x%lX (TXBAR 비트 켜짐&TXBTO 0 = 코어 미전송)\r\n",
+            /* TXBAR set but TXBTO not asserted -> core did not transmit = clock/core issue */
+            Debug_Print("[LB]        TXBAR=0x%lX TXBRP=0x%lX TXBTO=0x%lX (TXBAR bit set & TXBTO 0 = core not transmitting)\r\n",
                         (unsigned long)txbar_pre, (unsigned long)txbrp, (unsigned long)txbto);
         }
 
-        /* 요약 상태 */
+        /* Status summary */
         {
             uint32_t ecr = hfdcan1.Instance->ECR;
             uint32_t psr = hfdcan1.Instance->PSR;

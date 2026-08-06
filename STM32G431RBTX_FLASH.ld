@@ -1,52 +1,52 @@
 /**
   ******************************************************************************
   * @file      STM32G431RBTx_FLASH.ld
-  * @brief     STM32G431RB 링커 스크립트 (128KB Flash, 32KB RAM)
-  * @note      CubeMX 호환 구조
+  * @brief     STM32G431RB linker script (128KB Flash, 32KB RAM)
+  * @note      CubeMX compatible structure
   ******************************************************************************
-  * 메모리 맵:
+  * Memory map:
   *   FLASH (ORIGIN = 0x08000000, LENGTH = 128K)
   *   RAM   (ORIGIN = 0x20000000, LENGTH =  32K)
   ******************************************************************************
   */
 
-/* 입력 섹션 정의 */
+/* Input section definitions */
 ENTRY(Reset_Handler)
 
-/* 메모리 영역 정의 */
+/* Memory region definitions */
 MEMORY
 {
   RAM    (xrw)      : ORIGIN = 0x20000000, LENGTH = 32K
   FLASH  (rx)       : ORIGIN = 0x08000000, LENGTH = 128K
 }
 
-/* 스택 및 힙 크기 */
-_estack         = ORIGIN(RAM) + LENGTH(RAM);  /* 스택 top = RAM 끝 */
-_Min_Heap_Size  = 0x400 ; /* 최소 힙: 1KB */
-_Min_Stack_Size = 0x800 ; /* 최소 스택: 2KB (ISO-TP/UDS ISR 처리용) */
+/* Stack and heap sizes */
+_estack         = ORIGIN(RAM) + LENGTH(RAM);  /* Stack top = RAM end */
+_Min_Heap_Size  = 0x400 ; /* Minimum heap: 1KB */
+_Min_Stack_Size = 0x800 ; /* Minimum stack: 2KB (for ISO-TP/UDS ISR handling) */
 
-/* 섹션 정의 */
+/* Section definitions */
 SECTIONS
 {
   /* ====================================================
-   * .isr_vector - 인터럽트 벡터 테이블 (Flash 시작)
+   * .isr_vector - Interrupt vector table (Flash start)
    * ==================================================== */
   .isr_vector :
   {
     . = ALIGN(4);
-    KEEP(*(.isr_vector))       /* 벡터 테이블 보존 */
+    KEEP(*(.isr_vector))       /* Preserve vector table */
     . = ALIGN(4);
   } >FLASH
 
   /* ====================================================
-   * .text - 프로그램 코드
+   * .text - Program code
    * ==================================================== */
   .text :
   {
     . = ALIGN(4);
-    *(.text)                   /* 모든 .text 섹션 (코드) */
-    *(.text*)                  /* 컴파일러 생성 코드 섹션 */
-    *(.glue_7)                 /* ARM-Thumb 상호호환 */
+    *(.text)                   /* All .text sections (code) */
+    *(.text*)                  /* Compiler-generated code sections */
+    *(.glue_7)                 /* ARM-Thumb interworking */
     *(.glue_7t)
     *(.eh_frame)
 
@@ -54,22 +54,22 @@ SECTIONS
     KEEP (*(.fini))
 
     . = ALIGN(4);
-    _etext = .;               /* 코드 섹션 끝 마커 */
+    _etext = .;               /* Code section end marker */
   } >FLASH
 
   /* ====================================================
-   * .rodata - 읽기 전용 데이터
+   * .rodata - Read-only data
    * ==================================================== */
   .rodata :
   {
     . = ALIGN(4);
-    *(.rodata)                /* 읽기 전용 상수 데이터 */
+    *(.rodata)                /* Read-only constant data */
     *(.rodata*)
     . = ALIGN(4);
   } >FLASH
 
   /* ====================================================
-   * .ARM.extab / .ARM.exidx - 예외 처리 테이블
+   * .ARM.extab / .ARM.exidx - Exception handling tables
    * ==================================================== */
   .ARM.extab :
   {
@@ -85,7 +85,7 @@ SECTIONS
 
   /* ====================================================
    * .preinit_array / .init_array / .fini_array
-   * 생성자/소멸자 배열 (C++ 및 newlib 초기화)
+   * Constructor/destructor arrays (C++ and newlib init)
    * ==================================================== */
   .preinit_array :
   {
@@ -111,43 +111,43 @@ SECTIONS
   } >FLASH
 
   /* ====================================================
-   * _sidata - 초기화된 데이터 소스 주소 (Flash)
+   * _sidata - Initialized data source address (Flash)
    * ==================================================== */
   _sidata = LOADADDR(.data);
 
   /* ====================================================
-   * .data - 초기화된 전역/정적 변수 (RAM, Flash에서 복사)
+   * .data - Initialized global/static variables (RAM, copied from Flash)
    * ==================================================== */
   .data :
   {
     . = ALIGN(4);
-    _sdata = .;               /* 데이터 시작 마커 */
+    _sdata = .;               /* Data start marker */
     *(.data)
     *(.data*)
-    *(.RamFunc)               /* RAM에서 실행되는 함수 */
+    *(.RamFunc)               /* Functions executed from RAM */
     *(.RamFunc*)
     . = ALIGN(4);
-    _edata = .;               /* 데이터 끝 마커 */
+    _edata = .;               /* Data end marker */
   } >RAM AT> FLASH
 
   /* ====================================================
-   * .bss - 초기화되지 않은 전역/정적 변수 (RAM, 제로 초기화)
+   * .bss - Uninitialized global/static variables (RAM, zero-initialized)
    * ==================================================== */
   .bss :
   {
     . = ALIGN(4);
-    _sbss = .;                /* BSS 시작 마커 */
+    _sbss = .;                /* BSS start marker */
     __bss_start__ = _sbss;
     *(.bss)
     *(.bss*)
     *(COMMON)
     . = ALIGN(4);
-    _ebss = .;                /* BSS 끝 마커 */
+    _ebss = .;                /* BSS end marker */
     __bss_end__ = _ebss;
   } >RAM
 
   /* ====================================================
-   * ._user_heap_stack - 사용자 힙 및 스택
+   * ._user_heap_stack - User heap and stack
    * ==================================================== */
   ._user_heap_stack :
   {
@@ -160,7 +160,7 @@ SECTIONS
   } >RAM
 
   /* ====================================================
-   * ARM 속성 제거 (경고 억제)
+   * ARM attributes removal (suppress warnings)
    * ==================================================== */
   /DISCARD/ :
   {

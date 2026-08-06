@@ -1,20 +1,20 @@
 ##########################################################################################################################
 # Makefile - STM32G431RB Nucleo (phase0-obd-simulator)
-# CubeMX 호환 구조, CubeMX 없이도 독립 빌드 가능
+# CubeMX compatible structure, can build independently without CubeMX
 ##########################################################################################################################
 
 # ============================================
-# 타겟
+# Target
 # ============================================
 TARGET = phase0-obd-simulator
 
 # ============================================
-# 빌드 디렉토리
+# Build directory
 # ============================================
 BUILD_DIR = build
 
 # ============================================
-# C 소스 파일
+# C source files
 # ============================================
 C_SOURCES = \
 Core/Src/main.c \
@@ -32,7 +32,7 @@ Core/Src/stm32g4xx_it.c \
 Core/Src/system_stm32g4xx.c
 
 # ============================================
-# FreeRTOS 커널 소스 파일
+# FreeRTOS kernel source files
 # ============================================
 FREERTOS_DIR = Middlewares/FreeRTOS-Kernel
 
@@ -47,7 +47,7 @@ $(FREERTOS_DIR)/portable/GCC/ARM_CM4F/port.c \
 $(FREERTOS_DIR)/portable/MemMang/heap_4.c
 
 # ============================================
-# HAL 드라이버 소스 파일 (필요한 모듈만 포함)
+# HAL driver source files (only required modules)
 # ============================================
 HAL_SOURCES = \
 Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal.c \
@@ -70,12 +70,12 @@ Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_exti.c \
 Drivers/STM32G4xx_HAL_Driver/Src/stm32g4xx_hal_iwdg.c
 
 # ============================================
-# 어셈블리 소스 파일
+# Assembly source files
 # ============================================
 ASM_SOURCES = startup_stm32g431xx.s
 
 # ============================================
-# 툴체인
+# Toolchain
 # ============================================
 PREFIX = arm-none-eabi-
 CC      = $(PREFIX)gcc
@@ -85,7 +85,7 @@ SZ      = $(PREFIX)size
 OBJDUMP = $(PREFIX)objdump
 
 # ============================================
-# MCU 플래그
+# MCU flags
 # ============================================
 CPU       = -mcpu=cortex-m4
 FPU       = -mfpu=fpv4-sp-d16
@@ -93,14 +93,14 @@ FLOAT_ABI = -mfloat-abi=hard
 MCU       = $(CPU) -mthumb $(FPU) $(FLOAT_ABI)
 
 # ============================================
-# C 매크로 정의
+# C macro definitions
 # ============================================
 C_DEFS = \
 -DUSE_HAL_DRIVER \
 -DSTM32G431xx
 
 # ============================================
-# 헤더 포함 경로
+# Header include paths
 # ============================================
 C_INCLUDES = \
 -ICore/Inc \
@@ -112,41 +112,41 @@ C_INCLUDES = \
 -I$(FREERTOS_DIR)/portable/GCC/ARM_CM4F
 
 # ============================================
-# 최적화 옵션
+# Optimization options
 # ============================================
 OPT = -O0 -g3
 
 # ============================================
-# 컴파일 플래그
+# Compile flags
 # ============================================
 CFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections -fno-common
 
 # ============================================
-# 어셈블리 플래그
+# Assembly flags
 # ============================================
 ASFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall
 
 # ============================================
-# 링커 스크립트
+# Linker script
 # ============================================
 LDSCRIPT = STM32G431RBTX_FLASH.ld
 
 # ============================================
-# 라이브러리
+# Libraries
 # ============================================
 LDFLAGS = $(MCU) -specs=nano.specs -T$(LDSCRIPT) \
 -Wl,-Map=$(BUILD_DIR)/$(TARGET).map,--cref -Wl,--gc-sections
 
 # ============================================
-# 기본 타겟: all
+# Default target: all
 # ============================================
 all: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/$(TARGET).bin $(BUILD_DIR)/$(TARGET).hex
 	@echo ' '
-	@echo '빌드 완료:'
+	@echo 'Build complete:'
 	@$(SZ) $<
 
 # ============================================
-# 오브젝트 파일 목록 생성
+# Object file list
 # ============================================
 C_OBJECTS   = $(addprefix $(BUILD_DIR)/, $(C_SOURCES:.c=.o))
 HAL_OBJECTS = $(addprefix $(BUILD_DIR)/, $(HAL_SOURCES:.c=.o))
@@ -155,86 +155,86 @@ ASM_OBJECTS = $(addprefix $(BUILD_DIR)/, $(ASM_SOURCES:.s=.o))
 OBJECTS     = $(C_OBJECTS) $(HAL_OBJECTS) $(FREERTOS_OBJECTS) $(ASM_OBJECTS)
 
 # ============================================
-# 의존성 파일 목록
+# Dependency file list
 # ============================================
 DEPS = $(OBJECTS:.o=.d)
 
 # ============================================
-# ELF 링킹
+# ELF linking
 # ============================================
 $(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) $(LDSCRIPT) | $(BUILD_DIR)
-	@echo '링킹 중: $@'
+	@echo 'Linking: $@'
 	$(CC) $(LDFLAGS) -o $@ $(OBJECTS) -lc -lm -lnosys
 
 # ============================================
-# 바이너리 생성 (.bin, .hex)
+# Binary generation (.bin, .hex)
 # ============================================
 $(BUILD_DIR)/$(TARGET).bin: $(BUILD_DIR)/$(TARGET).elf
-	@echo 'BIN 생성 중: $@'
+	@echo 'Generating BIN: $@'
 	$(CP) -O binary $< $@
 
 $(BUILD_DIR)/$(TARGET).hex: $(BUILD_DIR)/$(TARGET).elf
-	@echo 'HEX 생성 중: $@'
+	@echo 'Generating HEX: $@'
 	$(CP) -O ihex $< $@
 
 # ============================================
-# C 소스 컴파일 규칙 (Core/Src)
+# C source compile rule (Core/Src)
 # ============================================
 $(BUILD_DIR)/Core/Src/%.o: Core/Src/%.c | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
-	@echo '컴파일 중: $<'
+	@echo 'Compiling: $<'
 	$(CC) -std=gnu11 $(CFLAGS) -MMD -MP -MF $(BUILD_DIR)/Core/Src/$*.d -c -o $@ $<
 
 # ============================================
-# HAL 드라이버 컴파일 규칙
+# HAL driver compile rule
 # ============================================
 $(BUILD_DIR)/Drivers/STM32G4xx_HAL_Driver/Src/%.o: Drivers/STM32G4xx_HAL_Driver/Src/%.c | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
-	@echo '컴파일 중 (HAL): $<'
+	@echo 'Compiling (HAL): $<'
 	$(CC) -std=gnu11 $(CFLAGS) -MMD -MP -MF $(BUILD_DIR)/Drivers/STM32G4xx_HAL_Driver/Src/$*.d -c -o $@ $<
 
 # ============================================
-# FreeRTOS 컴파일 규칙
+# FreeRTOS compile rule
 # ============================================
 $(BUILD_DIR)/Middlewares/%.o: Middlewares/%.c | $(BUILD_DIR)
 	@mkdir -p $(dir $@)
-	@echo '컴파일 중 (FreeRTOS): $<'
+	@echo 'Compiling (FreeRTOS): $<'
 	$(CC) -std=gnu11 $(CFLAGS) -MMD -MP -c -o $@ $<
 
 # ============================================
-# 어셈블리 컴파일 규칙
+# Assembly compile rule
 # ============================================
 $(BUILD_DIR)/startup_stm32g431xx.o: startup_stm32g431xx.s | $(BUILD_DIR)
-	@echo '어셈블 중: $<'
+	@echo 'Assembling: $<'
 	$(AS) -c $(ASFLAGS) -o $@ $<
 
 # ============================================
-# 빌드 디렉토리 생성
+# Build directory creation
 # ============================================
 $(BUILD_DIR):
 	@mkdir -p $@
 
 # ============================================
-# 의존성 파일 포함 (존재하는 경우)
+# Include dependency files (if they exist)
 # ============================================
 -include $(DEPS)
 
 # ============================================
-# clean 타겟
+# clean target
 # ============================================
 clean:
-	@echo '빌드 산출물 삭제 중...'
+	@echo 'Removing build artifacts...'
 	-rm -fR $(BUILD_DIR)
 
 # ============================================
-# flash 타겟 (st-flash 사용)
+# flash target (using st-flash)
 # ============================================
 flash: $(BUILD_DIR)/$(TARGET).bin
-	@echo '플래시 다운로드 중...'
+	@echo 'Flashing...'
 	st-flash write $< 0x08000000
 
 # ============================================
-# 디버그 정보 출력
+# Debug info output
 # ============================================
 size: $(BUILD_DIR)/$(TARGET).elf
 	$(SZ) $<
@@ -243,6 +243,6 @@ disasm: $(BUILD_DIR)/$(TARGET).elf
 	$(OBJDUMP) -d $< > $(BUILD_DIR)/$(TARGET).asm
 
 # ============================================
-# 헬퍼 타겟
+# Helper targets
 # ============================================
 .PHONY: all clean flash size disasm

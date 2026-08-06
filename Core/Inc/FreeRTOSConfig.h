@@ -1,44 +1,44 @@
 /**
  * @file    FreeRTOSConfig.h
- * @brief   FreeRTOS 설정 헤더
- * @note    STM32G431RB (Cortex-M4F @ 170MHz) 전용
+ * @brief   FreeRTOS configuration header
+ * @note    STM32G431RB (Cortex-M4F @ 170MHz) specific
  *
- * 핵심 설정 설명:
- *   - configTICK_RATE_HZ = 1000: 1ms 틱 (RTOS 스케줄링 최소 단위)
- *   - configTOTAL_HEAP_SIZE = 16384: FreeRTOS 동적 할당 힙 (태스크 TCB + 스택 + 큐)
- *   - configCHECK_FOR_STACK_OVERFLOW = 2: 스택 오버플로우 감지 (canary + 포인터 검사)
- *   - configMAX_SYSCALL_INTERRUPT_PRIORITY = 5: ISR에서 FreeRTOS API 호출 가능한 최고 우선순위
- *     (FDCAN ISR은 우선순위 6 이하로 설정해야 xQueueSendFromISR 호출 가능)
+ * Key configuration details:
+ *   - configTICK_RATE_HZ = 1000: 1ms tick (RTOS scheduling minimum unit)
+ *   - configTOTAL_HEAP_SIZE = 16384: FreeRTOS dynamic allocation heap (task TCB + stack + queue)
+ *   - configCHECK_FOR_STACK_OVERFLOW = 2: stack overflow detection (canary + pointer check)
+ *   - configMAX_SYSCALL_INTERRUPT_PRIORITY = 5: highest priority for FreeRTOS API calls from ISR
+ *     (FDCAN ISR must be set to priority 6 or lower to call xQueueSendFromISR)
  *
- * RAM 예산 (32KB 중):
- *   - Phase 1 기존 사용: ~3.2KB
- *   - FreeRTOS 힙: 16KB (태스크 3개 + 큐 + 스택)
- *   - 남은 여유: ~20KB (Phase 3 추가용)
+ * RAM budget (of 32KB):
+ *   - Phase 1 existing usage: ~3.2KB
+ *   - FreeRTOS heap: 16KB (3 tasks + queue + stack)
+ *   - Remaining free: ~20KB (for Phase 3 additions)
  */
 
 #ifndef FREERTOS_CONFIG_H
 #define FREERTOS_CONFIG_H
 
-/* === CPU 설정 === */
+/* === CPU configuration === */
 #define configCPU_CLOCK_HZ                  170000000UL  /* SYSCLK 170MHz */
-#define configTICK_RATE_HZ                  1000U        /* 1ms 틱 */
+#define configTICK_RATE_HZ                  1000U        /* 1ms tick */
 
-/* === 스케줄링 === */
-#define configUSE_PREEMPTION                1    /* 선점형 스케줄링 */
-#define configUSE_PORT_OPTIMISED_TASK_SELECTION 1  /* Cortex-M CLZ 명령어 활용 */
-#define configUSE_TIME_SLICING              1    /* 같은 우선순위 태스크 라운드로빈 */
+/* === Scheduling === */
+#define configUSE_PREEMPTION                1    /* Preemptive scheduling */
+#define configUSE_PORT_OPTIMISED_TASK_SELECTION 1  /* Cortex-M CLZ instruction utilization */
+#define configUSE_TIME_SLICING              1    /* Round-robin for equal priority tasks */
 #define configMAX_PRIORITIES                5
-#define configMINIMAL_STACK_SIZE            128U /* 단위: word (128 * 4 = 512 bytes) */
+#define configMINIMAL_STACK_SIZE            128U /* Unit: word (128 * 4 = 512 bytes) */
 #define configMAX_TASK_NAME_LEN             8
 #define configUSE_16_BIT_TICKS              0    /* 32-bit tick counter */
 #define configIDLE_SHOULD_YIELD             1
 
-/* === 메모리 관리 === */
-#define configSUPPORT_STATIC_ALLOCATION     0    /* 동적 할당만 사용 */
+/* === Memory management === */
+#define configSUPPORT_STATIC_ALLOCATION     0    /* Dynamic allocation only */
 #define configSUPPORT_DYNAMIC_ALLOCATION    1
 #define configTOTAL_HEAP_SIZE               16384U /* 16KB */
 
-/* === 동기화 === */
+/* === Synchronization === */
 #define configUSE_MUTEXES                   1
 #define configUSE_RECURSIVE_MUTEXES         0
 #define configUSE_COUNTING_SEMAPHORES       1
@@ -46,39 +46,39 @@
 #define configQUEUE_REGISTRY_SIZE           4
 #define configUSE_TASK_NOTIFICATIONS        1
 
-/* === 훅 함수 === */
+/* === Hook functions === */
 #define configUSE_IDLE_HOOK                 0
 #define configUSE_TICK_HOOK                 0
-#define configCHECK_FOR_STACK_OVERFLOW      2    /* canary + 포인터 검사 */
+#define configCHECK_FOR_STACK_OVERFLOW      2    /* canary + pointer check */
 #define configUSE_MALLOC_FAILED_HOOK        1
 
-/* === 타이머 (필요시 활성화) === */
+/* === Timers (enable if needed) === */
 #define configUSE_TIMERS                    0
 
-/* === Newlib 스레드 안전성 ===
- * 0으로 설정: printf가 하나의 태스크에서만 호출될 때 메모리 절약
- * Phase 2 Step 2에서 ISR→Task 분리 후 문제 없음
+/* === Newlib thread safety ===
+ * Set to 0: saves memory when printf is called from only one task
+ * No issue after ISR->Task separation in Phase 2 Step 2
  */
 #define configUSE_NEWLIB_REENTRANT          0
 
-/* === Cortex-M4 인터럽트 우선순위 ===
+/* === Cortex-M4 interrupt priority ===
  * STM32G4 NVIC: 4-bit priority (NVIC_PRIORITYGROUP_4)
- * 숫자가 작을수록 높은 우선순위
+ * Lower number = higher priority
  *
- * 우선순위 배정:
- *   0-4: FreeRTOS API 호출 불가 (하드웨어 실시간 인터럽트용)
- *   5-15: FreeRTOS API 호출 가능
- *   15 (0xF0): SysTick (가장 낮은 우선순위, 자동 설정)
+ * Priority assignment:
+ *   0-4: FreeRTOS API calls not allowed (hardware real-time interrupts)
+ *   5-15: FreeRTOS API calls allowed
+ *   15 (0xF0): SysTick (lowest priority, auto-configured)
  */
 #define configLIBRARY_LOWEST_INTERRUPT_PRIORITY         15U
 #define configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY     5U
 #define configKERNEL_INTERRUPT_PRIORITY         (configLIBRARY_LOWEST_INTERRUPT_PRIORITY << 4U)
 #define configMAX_SYSCALL_INTERRUPT_PRIORITY    (configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY << 4U)
 
-/* === 인터럽트 핸들러 매핑 ===
- * FreeRTOS port.c 함수명 → STM32 벡터테이블 함수명
- * 이 매핑으로 port.c가 SVC_Handler, PendSV_Handler를 직접 정의함
- * 따라서 stm32g4xx_it.c에서 제거해야 함 (중복 정의 방지)
+/* === Interrupt handler mapping ===
+ * FreeRTOS port.c function names -> STM32 vector table function names
+ * This mapping lets port.c define SVC_Handler and PendSV_Handler directly
+ * Therefore must be removed from stm32g4xx_it.c (prevent duplicate definition)
  */
 #define vPortSVCHandler     SVC_Handler
 #define xPortPendSVHandler  PendSV_Handler
@@ -90,11 +90,11 @@
         for (;;); \
     }
 
-/* === 필수 헤더 === */
+/* === Required headers === */
 #include <stdint.h>
 
-/* === API 활성화 (미설정 시 기본값 0 = 비활성화) ===
- * 필요한 함수만 1로 설정하여 Flash 사용량 최소화
+/* === API enable (unset defaults to 0 = disabled) ===
+ * Set only needed functions to 1 to minimize Flash usage
  */
 #define INCLUDE_vTaskPrioritySet                1
 #define INCLUDE_uxTaskPriorityGet               1

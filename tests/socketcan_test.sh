@@ -1,79 +1,79 @@
 #!/bin/bash
 #===============================================================================
-# OBD-II ECU 시뮬레이터 SocketCAN 테스트 스크립트
+# OBD-II ECU Simulator SocketCAN Test Script
 #
-# 설명:
-#   Linux SocketCAN 인터페이스를 사용하여 OBD-II ECU 시뮬레이터를 테스트합니다.
-#   can-utils 패키지(cansend, candump, cangen)가 필요합니다.
-#   실제 CAN 어댑터가 없으면 virtual CAN (vcan)으로도 테스트 가능합니다.
+# Description:
+#   Tests the OBD-II ECU simulator using the Linux SocketCAN interface.
+#   Requires can-utils package (cansend, candump, cangen).
+#   If no real CAN adapter is available, virtual CAN (vcan) can also be used.
 #
-# 사용법:
-#   sudo ./socketcan_test.sh [CAN 인터페이스]
-#   예: sudo ./socketcan_test.sh can0       # 실제 CAN 어댑터
-#       sudo ./socketcan_test.sh vcan0      # virtual CAN (테스트용)
+# Usage:
+#   sudo ./socketcan_test.sh [CAN interface]
+#   Example: sudo ./socketcan_test.sh can0       # Real CAN adapter
+#            sudo ./socketcan_test.sh vcan0      # virtual CAN (for testing)
 #
-# 전제 조건:
-#   1. can-utils 설치: sudo apt install can-utils
-#   2. vcan 사용 시:   sudo modprobe vcan
-#   3. root 권한 필요 (CAN 인터페이스 설정)
+# Prerequisites:
+#   1. can-utils installed: sudo apt install can-utils
+#   2. For vcan:          sudo modprobe vcan
+#   3. Root permission required (CAN interface setup)
 #
-# OBD-II CAN ID 참고:
-#   0x7E0 - OBD-II 요청 (ECU1, 테스터 -> ECU)
-#   0x7E8 - OBD-II 응답 (ECU1, ECU -> 테스터)
-#   0x7DF - 브로드캐스트 요청 (모든 ECU)
-#   0x7E1 - OBD-II 요청 (ECU2)
-#   0x7E9 - OBD-II 응답 (ECU2)
+# OBD-II CAN ID reference:
+#   0x7E0 - OBD-II request (ECU1, tester -> ECU)
+#   0x7E8 - OBD-II response (ECU1, ECU -> tester)
+#   0x7DF - Broadcast request (all ECUs)
+#   0x7E1 - OBD-II request (ECU2)
+#   0x7E9 - OBD-II response (ECU2)
 #
-# ISO-TP 단일 프레임 (SF) 구조:
-#   요청: [PCI 타입=01][길이][서비스ID=01][PID][패딩...]
-#   예:   7E0#02010D0000000000  -> SF, 2바이트 데이터, 서비스01(PIDs), PID=0x0D(차속)
-#   응답: [PCI 타입=01][길이][서비스ID=41][PID][데이터][패딩...]
-#   예:   7E8#030410D000000000  -> SF, 4바이트 데이터, 서비스41(응답), PID=0x0D, 데이터=0x10
+# ISO-TP Single Frame (SF) structure:
+#   Request:  [PCI type=01][length][service ID=01][PID][padding...]
+#   Example:  7E0#02010D0000000000  -> SF, 2-byte data, service 01(PIDs), PID=0x0D(vehicle speed)
+#   Response: [PCI type=01][length][service ID=41][PID][data][padding...]
+#   Example:  7E8#030410D000000000  -> SF, 4-byte data, service 41(response), PID=0x0D, data=0x10
 #===============================================================================
 
 set -euo pipefail
 
 #=======================================
-# 설정 (기본값)
+# Configuration (defaults)
 #=======================================
-CAN_IF="${1:-can0}"              # CAN 인터페이스 이름 (기본: can0)
-BITRATE="500000"                 # CAN 통신 속도 (500kbps, 자동차 표준)
-REQUEST_ID="7E0"                 # OBD-II 요청 CAN ID (ECU1)
-RESPONSE_ID="7E8"                # OBD-II 응답 CAN ID (ECU1)
-TIMEOUT_SEC=2                    # 응답 대기 시간 (초)
-STRESS_COUNT=10                  # 스트레스 테스트 반복 횟수
-RAMP_SAMPLES=20                  # 램프 업/다운 샘플링 횟수
-RAMP_INTERVAL=0.5                # 램프 테스트 샘플링 간격 (초)
+CAN_IF="${1:-can0}"              # CAN interface name (default: can0)
+BITRATE="500000"                 # CAN bitrate (500kbps, automotive standard)
+REQUEST_ID="7E0"                 # OBD-II request CAN ID (ECU1)
+RESPONSE_ID="7E8"                # OBD-II response CAN ID (ECU1)
+TIMEOUT_SEC=2                    # Response wait time (seconds)
+STRESS_COUNT=10                  # Stress test iteration count
+RAMP_SAMPLES=20                  # Ramp up/down sample count
+RAMP_INTERVAL=0.5                # Ramp test sampling interval (seconds)
 
-# 카운터
+# Counters
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
 
 #=======================================
-# 색상 출력 헬퍼
+# Color output helpers
 #=======================================
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
-NC='\033[0m' # 색상 리셋
+NC='\033[0m' # Color reset
 
 print_pass() { echo -e "  ${GREEN}[PASS]${NC} $1"; ((++PASS_COUNT)); }
 print_fail() { echo -e "  ${RED}[FAIL]${NC} $1"; ((++FAIL_COUNT)); }
 print_skip() { echo -e "  ${YELLOW}[SKIP]${NC} $1"; ((++SKIP_COUNT)); }
-# 참고: 전위 증감 ((++VAR)) 사용 — 후위 ((VAR++)) 는 VAR==0 일 때 산술식 값이 0 이라
-# exit status 1 을 반환하고, set -euo pipefail 아래서 스크립트를 종료시킨다.
+# Note: pre-increment ((++VAR)) is used -- post-increment ((VAR++)) returns 0 when VAR==0,
+# which becomes exit status 1 and terminates the script under set -euo pipefail.
 print_info() { echo -e "  ${CYAN}[INFO]${NC} $1"; }
 print_header() { echo -e "\n${CYAN}=== $1 ===${NC}"; }
 
 #=======================================
-# 사전 확인
+# Pre-flight checks
 #=======================================
 check_prerequisites() {
-    print_header "사전 확인"
+    print_header "Pre-flight checks"
 
-    # can-utils 설치 확인
+    # Check can-utils installation
     local missing_tools=()
     for tool in cansend candump cangen; do
         if ! command -v "$tool" &>/dev/null; then
@@ -82,185 +82,185 @@ check_prerequisites() {
     done
 
     if [[ ${#missing_tools[@]} -gt 0 ]]; then
-        echo -e "  ${RED}[ERROR]${NC} 다음 도구가 설치되어 있지 않습니다: ${missing_tools[*]}"
-        echo "  설치: sudo apt install can-utils"
+        echo -e "  ${RED}[ERROR]${NC} The following tools are not installed: ${missing_tools[*]}"
+        echo "  Install: sudo apt install can-utils"
         exit 1
     fi
-    print_pass "can-utils 설치 확인"
+    print_pass "can-utils installation verified"
 
-    # ip 명령어 확인
+    # Check ip command
     if ! command -v ip &>/dev/null; then
-        echo -e "  ${RED}[ERROR]${NC} ip 명령어를 찾을 수 없습니다"
+        echo -e "  ${RED}[ERROR]${NC} ip command not found"
         exit 1
     fi
-    print_pass "ip 명령어 확인"
+    print_pass "ip command verified"
 
-    # root 권한 확인
+    # Check root permission
     if [[ $EUID -ne 0 ]]; then
-        echo -e "  ${RED}[ERROR]${NC} root 권한이 필요합니다. sudo로 실행하세요."
-        echo "  사용법: sudo $0 $CAN_IF"
+        echo -e "  ${RED}[ERROR]${NC} Root permission required. Run with sudo."
+        echo "  Usage: sudo $0 $CAN_IF"
         exit 1
     fi
-    print_pass "root 권한 확인"
+    print_pass "Root permission verified"
 }
 
 #=======================================
-# CAN 인터페이스 설정
+# CAN interface setup
 #=======================================
 setup_can_interface() {
-    print_header "CAN 인터페이스 설정 (${CAN_IF})"
+    print_header "CAN interface setup (${CAN_IF})"
 
-    # 인터페이스가 이미 올라와 있는지 확인
+    # Check if interface is already up
     if ip link show "$CAN_IF" &>/dev/null; then
-        print_info "${CAN_IF} 인터페이스가 존재합니다. 재설정합니다."
+        print_info "${CAN_IF} interface exists. Reconfiguring."
         ip link set "$CAN_IF" down 2>/dev/null || true
     fi
 
-    # vcan 인터페이스인 경우 모듈 로드 및 생성
+    # vcan interface: load module and create
     if [[ "$CAN_IF" == vcan* ]]; then
-        # vcan 커널 모듈 로드
+        # Load vcan kernel module
         if ! lsmod | grep -q vcan; then
-            print_info "vcan 커널 모듈 로드 중..."
+            print_info "Loading vcan kernel module..."
             modprobe vcan 2>/dev/null || true
         fi
 
-        # vcan 인터페이스 생성
+        # Create vcan interface
         if ! ip link show "$CAN_IF" &>/dev/null; then
-            print_info "vcan 인터페이스 생성 중..."
+            print_info "Creating vcan interface..."
             ip link add dev "$CAN_IF" type vcan
         fi
         ip link set "$CAN_IF" up
-        print_pass "vcan 인터페이스 설정 완료 (${CAN_IF})"
+        print_pass "vcan interface setup complete (${CAN_IF})"
     else
-        # 실제 CAN 인터페이스 설정 (Classic CAN 500kbps)
-        print_info "CAN 인터페이스 설정: bitrate=${BITRATE}"
+        # Real CAN interface setup (Classic CAN 500kbps)
+        print_info "CAN interface setup: bitrate=${BITRATE}"
         ip link set "$CAN_IF" type can bitrate "$BITRATE" 2>/dev/null
         ip link set "$CAN_IF" up
-        print_pass "CAN 인터페이스 설정 완료 (${CAN_IF}, ${BITRATE}bps)"
+        print_pass "CAN interface setup complete (${CAN_IF}, ${BITRATE}bps)"
     fi
 
-    # 인터페이스 상태 확인
+    # Verify interface state
     if ip link show "$CAN_IF" | grep -q "UP"; then
-        print_pass "인터페이스 상태: UP"
+        print_pass "Interface state: UP"
     else
-        print_fail "인터페이스 상태 확인 실패"
+        print_fail "Interface state check failed"
         exit 1
     fi
 }
 
 #=======================================
-# CAN 인터페이스 정리
+# CAN interface cleanup
 #=======================================
 cleanup_can_interface() {
-    print_header "정리"
+    print_header "Cleanup"
 
-    # candump 백그라운드 프로세스 정리
+    # Cleanup candump background process
     if [[ -n "${CANDUMP_PID:-}" ]] && kill -0 "$CANDUMP_PID" 2>/dev/null; then
         kill "$CANDUMP_PID" 2>/dev/null || true
         wait "$CANDUMP_PID" 2>/dev/null || true
-        print_info "candump 프로세스 정리 완료 (PID: ${CANDUMP_PID})"
+        print_info "candump process cleaned up (PID: ${CANDUMP_PID})"
     fi
 
-    # 캡처 파일 정리
+    # Cleanup capture file
     if [[ -f "${TMP_CAPTURE_FILE:-}" ]]; then
         rm -f "$TMP_CAPTURE_FILE"
     fi
 
-    # 인터페이스 종료
+    # Bring down interface
     ip link set "$CAN_IF" down 2>/dev/null || true
-    print_info "${CAN_IF} 인터페이스 종료"
+    print_info "${CAN_IF} interface brought down"
 
-    # vcan 인터페이스 삭제
+    # Delete vcan interface
     if [[ "$CAN_IF" == vcan* ]]; then
         ip link del dev "$CAN_IF" 2>/dev/null || true
-        print_info "vcan 인터페이스 삭제"
+        print_info "vcan interface deleted"
     fi
 }
 
 #=======================================
-# 응답 수신 함수
+# Response receive function
 #=======================================
-# 지정된 PID로 요청을 보내고 응답을 기다립니다.
-# 인자:
-#   $1 - PID (16진수, 예: "0D")
-#   $2 - 응답 CAN ID (기본: 7E8)
-# 반환:
-#   표준 출력으로 수신된 CAN 프레임 (또는 빈 문자열)
+# Sends a request for the specified PID and waits for a response.
+# Arguments:
+#   $1 - PID (hex, e.g. "0D")
+#   $2 - Response CAN ID (default: 7E8)
+# Returns:
+#   Received CAN frame on stdout (or empty string)
 send_obd2_request() {
     local pid="$1"
     local resp_id="${2:-$RESPONSE_ID}"
     local frame
 
-    # ISO-TP 단일 프레임 요청 생성
-    # PCI 타입 0x01 (SF), 길이 0x02, 서비스 0x01 (Show Current Data), PID
+    # Build ISO-TP single frame request
+    # PCI type 0x01 (SF), length 0x02, service 0x01 (Show Current Data), PID
     frame="${REQUEST_ID}#02010${pid}00000000"
 
-    # candump를 백그라운드에서 시작하여 응답 캡처
-    # 지정된 응답 ID만 필터링
+    # Start candump in background to capture response
+    # Filter for specified response ID only
     TMP_CAPTURE_FILE=$(mktemp /tmp/obd2_capture_XXXXXX)
     timeout "${TIMEOUT_SEC}" candump "$CAN_IF,${resp_id}:7FF" -n 1 -T "${TIMEOUT_SEC}000" > "$TMP_CAPTURE_FILE" 2>/dev/null &
     local dump_pid=$!
 
-    # 짧은 대기 후 요청 전송
+    # Brief wait then send request
     sleep 0.05
     cansend "$CAN_IF" "$frame" 2>/dev/null || true
 
-    # 응답 대기
+    # Wait for response
     wait "$dump_pid" 2>/dev/null || true
 
-    # 캡처된 응답 반환
+    # Return captured response
     if [[ -s "$TMP_CAPTURE_FILE" ]]; then
         cat "$TMP_CAPTURE_FILE"
     fi
 }
 
 #=======================================
-# 응답 파싱 함수
+# Response parse function
 #=======================================
-# candump 출력에서 CAN 데이터를 추출합니다.
-# candump 출력 형식: "<timestamp> <interface> <ID>#<DATA>"
-# 인자:
-#   $1 - candump 출력 라인
-# 반환:
-#   CAN 프레임 데이터 (16진수 문자열, 예: "030410D000000000")
+# Extracts CAN data from candump output.
+# candump output format: "<timestamp> <interface> <ID>#<DATA>"
+# Arguments:
+#   $1 - candump output line
+# Returns:
+#   CAN frame data (hex string, e.g. "030410D000000000")
 parse_response() {
     local line="$1"
-    # candump 형식에서 데이터 부분 추출: ... 7E8#030410D000000000
+    # Extract data portion from candump format: ... 7E8#030410D000000000
     echo "$line" | grep -oP '#\K[0-9A-Fa-f]+' | head -1
 }
 
 #=======================================
-# 응답 검증 함수
+# Response validation function
 #=======================================
-# OBD-II 응답이 올바른 형식인지 검증합니다.
-# 응답 형식 (단일 프레임):
-#   바이트0: PCI 타입 (0x01 = SF) 또는 길이
-#   바이트1: 데이터 길이 (PCI=0x01인 경우)
-#   바이트2: 서비스 ID + 0x40 (0x41 = Show Current Data 응답)
-#   바이트3: 요청한 PID
-#   바이트4+: 응답 데이터
-# 인자:
-#   $1 - CAN 프레임 데이터 (16진수 문자열)
-#   $2 - 예상 PID
-# 반환:
-#   0 = 검증 성공, 1 = 검증 실패
+# Validates whether the OBD-II response has correct format.
+# Response format (single frame):
+#   Byte 0: PCI type (0x01 = SF) or length
+#   Byte 1: Data length (when PCI=0x01)
+#   Byte 2: Service ID + 0x40 (0x41 = Show Current Data response)
+#   Byte 3: Requested PID
+#   Byte 4+: Response data
+# Arguments:
+#   $1 - CAN frame data (hex string)
+#   $2 - Expected PID
+# Returns:
+#   0 = validation pass, 1 = validation fail
 validate_response() {
     local data="$1"
     local expected_pid="$2"
 
-    # 데이터 길이 확인 (최소 6바이트: PCI + 길이 + 서비스 + PID + 데이터 2바이트)
+    # Check data length (minimum 6 bytes: PCI + length + service + PID + 2 data bytes)
     local data_len=${#data}
-    if [[ $data_len -lt 12 ]]; then  # 16진수 12자 = 6바이트
+    if [[ $data_len -lt 12 ]]; then  # 12 hex chars = 6 bytes
         return 1
     fi
 
-    # 서비스 ID 확인: 바이트2(인덱스 4-5)가 "41"이어야 함 (0x01 + 0x40)
+    # Check service ID: byte 2 (index 4-5) must be "41" (0x01 + 0x40)
     local service_id="${data:4:2}"
     if [[ "${service_id^^}" != "41" ]]; then
         return 1
     fi
 
-    # PID 확인: 바이트3(인덱스 6-7)가 요청한 PID와 일치해야 함
+    # Check PID: byte 3 (index 6-7) must match requested PID
     local response_pid="${data:6:2}"
     if [[ "${response_pid^^}" != "${expected_pid^^}" ]]; then
         return 1
@@ -270,170 +270,170 @@ validate_response() {
 }
 
 #=======================================
-# 개별 PID 테스트
+# Individual PID test
 #=======================================
 test_single_pid() {
     local pid="$1"
     local pid_name="$2"
     local description="$3"
-    local validate_fn="${4:-}"  # 선택적 추가 검증 함수
+    local validate_fn="${4:-}"  # Optional additional validation function
 
-    echo -n "  테스트 PID 0x${pid} (${pid_name}): "
+    echo -n "  Test PID 0x${pid} (${pid_name}): "
 
-    # OBD-II 요청 전송 및 응답 수신
+    # Send OBD-II request and receive response
     local response
     response=$(send_obd2_request "$pid")
 
     if [[ -z "$response" ]]; then
-        print_fail "${pid_name} - 응답 없음 (타임아웃 ${TIMEOUT_SEC}초)"
+        print_fail "${pid_name} - No response (timeout ${TIMEOUT_SEC}s)"
         return 1
     fi
 
-    # 응답 파싱
+    # Parse response
     local frame_data
     frame_data=$(parse_response "$response")
 
     if [[ -z "$frame_data" ]]; then
-        print_fail "${pid_name} - 응답 파싱 실패: ${response}"
+        print_fail "${pid_name} - Response parse failed: ${response}"
         return 1
     fi
 
-    print_info "수신 프레임: ${frame_data}"
+    print_info "Received frame: ${frame_data}"
 
-    # 기본 응답 형식 검증
+    # Basic response format validation
     if ! validate_response "$frame_data" "$pid"; then
-        print_fail "${pid_name} - 응답 형식 오류: ${frame_data}"
+        print_fail "${pid_name} - Response format error: ${frame_data}"
         return 1
     fi
 
-    # 추가 검증 (디코딩 값 확인)
+    # Additional validation (check decoded values)
     if [[ -n "$validate_fn" ]]; then
         if ! $validate_fn "$frame_data"; then
-            print_fail "${pid_name} - ${description} 검증 실패: ${frame_data}"
+            print_fail "${pid_name} - ${description} validation failed: ${frame_data}"
             return 1
         fi
     fi
 
-    print_pass "${pid_name} - ${description} (프레임: ${frame_data})"
+    print_pass "${pid_name} - ${description} (frame: ${frame_data})"
     return 0
 }
 
 #=======================================
-# PID 값 검증 함수들
+# PID value validation functions
 #=======================================
 
-# PID 0x00: 지원되는 PID 목록
-# 응답 데이터 바이트4-5에 비트맵 (지원 PID 0x01-0x20)
+# PID 0x00: Supported PID list
+# Response data bytes 4-5 contain bitmap (support for PIDs 0x01-0x20)
 validate_pid_00() {
     local data="$1"
     local supported_bitmap="${data:8:4}"
 
-    # 최소한 PID 0x05, 0x0C, 0x0D는 지원되어야 함
-    # 비트맵에서 해당 비트 확인
-    # PID 0x05 -> 비트 5 -> 바이트0 비트4
-    # PID 0x0C -> 비트 12 -> 바이트1 비트3
-    # PID 0x0D -> 비트 13 -> 바이트1 비트4
+    # At minimum, PID 0x05, 0x0C, 0x0D should be supported
+    # Check corresponding bits in bitmap
+    # PID 0x05 -> bit 5 -> byte 0 bit 4
+    # PID 0x0C -> bit 12 -> byte 1 bit 3
+    # PID 0x0D -> bit 13 -> byte 1 bit 4
     local byte0=$((16#${supported_bitmap:0:2}))
     local byte1=$((16#${supported_bitmap:2:2}))
 
     # PID 0x05 (bit 4 of byte0)
     if (( (byte0 & 0x10) == 0 )); then
-        echo -e "    ${YELLOW}경고:${NC} PID 0x05(냉각수 온도) 미지원"
+        echo -e "    ${YELLOW}Warning:${NC} PID 0x05(coolant temp) not supported"
     fi
     # PID 0x0C (bit 3 of byte1)
     if (( (byte1 & 0x08) == 0 )); then
-        echo -e "    ${YELLOW}경고:${NC} PID 0x0C(RPM) 미지원"
+        echo -e "    ${YELLOW}Warning:${NC} PID 0x0C(RPM) not supported"
     fi
     # PID 0x0D (bit 4 of byte1)
     if (( (byte1 & 0x10) == 0 )); then
-        echo -e "    ${YELLOW}경고:${NC} PID 0x0D(차속) 미지원"
+        echo -e "    ${YELLOW}Warning:${NC} PID 0x0D(vehicle speed) not supported"
     fi
 
-    return 0  # 비트맵 검증은 경고만, 실패로 처리하지 않음
+    return 0  # Bitmap validation is warning-only, not treated as failure
 }
 
-# PID 0x05: 냉각수 온도
-# 디코딩: 온도(°C) = value - 40
-# 유효 범위: -40°C ~ 215°C (1바이트)
+# PID 0x05: Coolant temperature
+# Decode: Temperature(C) = value - 40
+# Valid range: -40C ~ 215C (1 byte)
 validate_pid_05() {
     local data="$1"
-    # 데이터 바이트4 (인덱스 8-9)
+    # Data byte 4 (index 8-9)
     local raw_value=$((16#${data:8:2}))
     local temp_c=$((raw_value - 40))
 
-    # 합리적 범위 확인 (-40 ~ 150°C)
+    # Check reasonable range (-40 ~ 150C)
     if (( temp_c < -40 || temp_c > 150 )); then
-        echo -e "    ${YELLOW}범위 경고:${NC} 냉각수 온도 ${temp_c}°C (원시값: 0x${data:8:2})"
+        echo -e "    ${YELLOW}Range warning:${NC} Coolant temp ${temp_c}C (raw: 0x${data:8:2})"
     fi
 
-    echo -e "    냉각수 온도: ${temp_c}°C (원시값: 0x${data:8:2})"
+    echo -e "    Coolant temp: ${temp_c}C (raw: 0x${data:8:2})"
     return 0
 }
 
-# PID 0x0C: 엔진 RPM
-# 디코딩: RPM = (A * 256 + B) / 4
-# 유효 범위: 0 ~ 16383.75 RPM (2바이트)
+# PID 0x0C: Engine RPM
+# Decode: RPM = (A * 256 + B) / 4
+# Valid range: 0 ~ 16383.75 RPM (2 bytes)
 validate_pid_0C() {
     local data="$1"
-    # 데이터 바이트4-5 (인덱스 8-11)
+    # Data bytes 4-5 (index 8-11)
     local byte_a=$((16#${data:8:2}))
     local byte_b=$((16#${data:10:2}))
     local rpm=$(( (byte_a * 256 + byte_b) / 4 ))
 
-    # 합리적 범위 확인 (0 ~ 8000 RPM)
+    # Check reasonable range (0 ~ 8000 RPM)
     if (( rpm > 8000 )); then
-        echo -e "    ${YELLOW}범위 경고:${NC} RPM ${rpm} (원시값: 0x${data:8:2}${data:10:2})"
+        echo -e "    ${YELLOW}Range warning:${NC} RPM ${rpm} (raw: 0x${data:8:2}${data:10:2})"
     fi
 
-    echo -e "    엔진 RPM: ${rpm} (원시값: 0x${data:8:2}${data:10:2})"
+    echo -e "    Engine RPM: ${rpm} (raw: 0x${data:8:2}${data:10:2})"
     return 0
 }
 
-# PID 0x0D: 차량 속도
-# 디코딩: 속도(km/h) = A (1바이트)
-# 유효 범위: 0 ~ 255 km/h
+# PID 0x0D: Vehicle speed
+# Decode: Speed(km/h) = A (1 byte)
+# Valid range: 0 ~ 255 km/h
 validate_pid_0D() {
     local data="$1"
-    # 데이터 바이트4 (인덱스 8-9)
+    # Data byte 4 (index 8-9)
     local speed=$((16#${data:8:2}))
 
-    # 합리적 범위 확인 (0 ~ 255 km/h)
+    # Check reasonable range (0 ~ 255 km/h)
     if (( speed > 255 )); then
-        echo -e "    ${YELLOW}범위 경고:${NC} 속도 ${speed} km/h"
+        echo -e "    ${YELLOW}Range warning:${NC} Speed ${speed} km/h"
     fi
 
-    echo -e "    차량 속도: ${speed} km/h (원시값: 0x${data:8:2})"
+    echo -e "    Vehicle speed: ${speed} km/h (raw: 0x${data:8:2})"
     return 0
 }
 
 #=======================================
-# 전체 PID 순차 테스트
+# All PID sequential tests
 #=======================================
 run_all_pid_tests() {
-    print_header "개별 PID 테스트"
+    print_header "Individual PID Tests"
 
-    # PID 0x00: 지원되는 PID 목록
-    test_single_pid "00" "지원 PID 목록" "PID 비트맵" "validate_pid_00"
+    # PID 0x00: Supported PID list
+    test_single_pid "00" "Supported PID list" "PID bitmap" "validate_pid_00"
 
-    # PID 0x05: 냉각수 온도
-    test_single_pid "05" "냉각수 온도" "온도 디코딩" "validate_pid_05"
+    # PID 0x05: Coolant temperature
+    test_single_pid "05" "Coolant temp" "Temperature decode" "validate_pid_05"
 
-    # PID 0x0C: 엔진 RPM
-    test_single_pid "0C" "엔진 RPM" "RPM 디코딩" "validate_pid_0C"
+    # PID 0x0C: Engine RPM
+    test_single_pid "0C" "Engine RPM" "RPM decode" "validate_pid_0C"
 
-    # PID 0x0D: 차량 속도
-    test_single_pid "0D" "차량 속도" "속도 디코딩" "validate_pid_0D"
+    # PID 0x0D: Vehicle speed
+    test_single_pid "0D" "Vehicle speed" "Speed decode" "validate_pid_0D"
 }
 
 #=======================================
-# 반복 스트레스 테스트
+# Repeated stress test
 #=======================================
 run_stress_test() {
-    print_header "스트레스 테스트 (${STRESS_COUNT}회 반복)"
+    print_header "Stress Test (${STRESS_COUNT} iterations)"
 
     local local_pass=0
     local local_fail=0
-    local target_pid="0D"  # 차속 PID로 테스트
+    local target_pid="0D"  # Test with vehicle speed PID
 
     for i in $(seq 1 "$STRESS_COUNT"); do
         echo -n "  [${i}/${STRESS_COUNT}] "
@@ -442,7 +442,7 @@ run_stress_test() {
         response=$(send_obd2_request "$target_pid")
 
         if [[ -z "$response" ]]; then
-            echo -e "${RED}응답 없음${NC}"
+            echo -e "${RED}No response${NC}"
             ((++local_fail))
             ((++FAIL_COUNT))
             continue
@@ -452,36 +452,36 @@ run_stress_test() {
         frame_data=$(parse_response "$response")
 
         if validate_response "$frame_data" "$target_pid"; then
-            echo -e "${GREEN}OK${NC} (프레임: ${frame_data})"
+            echo -e "${GREEN}OK${NC} (frame: ${frame_data})"
             ((++local_pass))
             ((++PASS_COUNT))
         else
-            echo -e "${RED}형식 오류${NC} (프레임: ${frame_data})"
+            echo -e "${RED}Format error${NC} (frame: ${frame_data})"
             ((++local_fail))
             ((++FAIL_COUNT))
         fi
     done
 
     echo ""
-    print_info "스트레스 테스트 결과: ${GREEN}${local_pass} 성공${NC}, ${RED}${local_fail} 실패${NC} (합계: ${STRESS_COUNT})"
+    print_info "Stress test results: ${GREEN}${local_pass} passed${NC}, ${RED}${local_fail} failed${NC} (total: ${STRESS_COUNT})"
 }
 
 #=======================================
-# 램프 업/다운 시뮬레이션 검증
+# Ramp up/down simulation verification
 #=======================================
-# ECU 시뮬레이터가 램프 업/다운 패턴을 따르는지 확인합니다.
-# RPM이 점진적으로 변하는지 여러 번 샘플링하여 검증합니다.
+# Checks whether the ECU simulator follows a ramp up/down pattern.
+# Verifies gradual RPM changes by sampling multiple times.
 run_ramp_test() {
-    print_header "램프 업/다운 시뮬레이션 검증"
+    print_header "Ramp Up/Down Simulation Verification"
 
     local pid="0C"  # RPM PID
     local samples=()
     local prev_rpm=-1
-    local ramp_direction=""  # "up" 또는 "down"
+    local ramp_direction=""  # "up" or "down"
     local direction_changes=0
     local valid_samples=0
 
-    print_info "RPM을 ${RAMP_SAMPLES}회 샘플링합니다 (간격: ${RAMP_INTERVAL}s)"
+    print_info "Sampling RPM ${RAMP_SAMPLES} times (interval: ${RAMP_INTERVAL}s)"
 
     for i in $(seq 1 "$RAMP_SAMPLES"); do
         local response
@@ -500,7 +500,7 @@ run_ramp_test() {
             continue
         fi
 
-        # RPM 디코딩
+        # RPM decode
         local byte_a=$((16#${frame_data:8:2}))
         local byte_b=$((16#${frame_data:10:2}))
         local rpm=$(( (byte_a * 256 + byte_b) / 4 ))
@@ -508,7 +508,7 @@ run_ramp_test() {
         samples+=("$rpm")
         ((++valid_samples))
 
-        # 방향 변화 감지
+        # Detect direction change
         if [[ $prev_rpm -ge 0 ]]; then
             if (( rpm > prev_rpm )); then
                 if [[ "$ramp_direction" == "down" ]]; then
@@ -532,21 +532,21 @@ run_ramp_test() {
 
     echo ""
 
-    # 결과 분석
+    # Analyze results
     if (( valid_samples < 3 )); then
-        print_fail "유효 샘플 부족 (${valid_samples}/${RAMP_SAMPLES})"
+        print_fail "Insufficient valid samples (${valid_samples}/${RAMP_SAMPLES})"
         return
     fi
 
-    # 샘플 값 출력
-    echo -e "  샘플링된 RPM 값 (${valid_samples}개):"
+    # Print sampled values
+    echo -e "  Sampled RPM values (${valid_samples} samples):"
     echo -n "  "
     for s in "${samples[@]}"; do
         printf "%6d" "$s"
     done
     echo ""
 
-    # 통계 계산
+    # Calculate statistics
     local min_rpm=${samples[0]}
     local max_rpm=${samples[0]}
     local sum=0
@@ -557,77 +557,77 @@ run_ramp_test() {
     done
     local avg_rpm=$((sum / valid_samples))
 
-    print_info "RPM 통계: 최소=${min_rpm}, 최대=${max_rpm}, 평균=${avg_rpm}"
-    print_info "방향 전환 횟수: ${direction_changes}"
+    print_info "RPM statistics: min=${min_rpm}, max=${max_rpm}, avg=${avg_rpm}"
+    print_info "Direction changes: ${direction_changes}"
 
-    # 램프 패턴 검증: 값이 변화하는지 확인
+    # Ramp pattern verification: check if values change
     if (( max_rpm == min_rpm )); then
-        print_fail "RPM 값이 변화하지 않습니다 (모든 샘플이 ${min_rpm} RPM)"
+        print_fail "RPM values not changing (all samples at ${min_rpm} RPM)"
     else
-        print_pass "RPM 값이 변화합니다 (범위: ${min_rpm} ~ ${max_rpm} RPM)"
+        print_pass "RPM values changing (range: ${min_rpm} ~ ${max_rpm} RPM)"
     fi
 }
 
 #=======================================
-# 결과 요약
+# Result summary
 #=======================================
 print_summary() {
     local total=$((PASS_COUNT + FAIL_COUNT + SKIP_COUNT))
 
     echo ""
     echo "========================================"
-    echo "  테스트 결과 요약"
+    echo "  Test Results Summary"
     echo "========================================"
-    echo -e "  총 테스트:    ${total}"
-    echo -e "  성공:         ${GREEN}${PASS_COUNT}${NC}"
-    echo -e "  실패:         ${RED}${FAIL_COUNT}${NC}"
-    echo -e "  건너뜀:       ${YELLOW}${SKIP_COUNT}${NC}"
+    echo -e "  Total tests:    ${total}"
+    echo -e "  Passed:         ${GREEN}${PASS_COUNT}${NC}"
+    echo -e "  Failed:         ${RED}${FAIL_COUNT}${NC}"
+    echo -e "  Skipped:        ${YELLOW}${SKIP_COUNT}${NC}"
     echo "========================================"
 
     if (( FAIL_COUNT > 0 )); then
-        echo -e "  결과: ${RED}일부 테스트 실패${NC}"
+        echo -e "  Result: ${RED}Some tests failed${NC}"
         return 1
     else
-        echo -e "  결과: ${GREEN}모든 테스트 통과${NC}"
+        echo -e "  Result: ${GREEN}All tests passed${NC}"
         return 0
     fi
 }
 
 #=======================================
-# 메인 실행
+# Main execution
 #=======================================
 main() {
     echo "========================================"
-    echo "  OBD-II ECU 시뮬레이터 SocketCAN 테스트"
-    echo "  인터페이스: ${CAN_IF}"
-    echo "  속도: ${BITRATE} bps"
-    echo "  날짜: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "  OBD-II ECU Simulator SocketCAN Test"
+    echo "  Interface: ${CAN_IF}"
+    echo "  Bitrate: ${BITRATE} bps"
+    echo "  Date: $(date '+%Y-%m-%d %H:%M:%S')"
     echo "========================================"
 
-    # 정리 훅 등록 (스크립트 종료 시 실행)
+    # Register cleanup hook (runs on script exit)
     trap cleanup_can_interface EXIT INT TERM
 
-    # 사전 확인
+    # Pre-flight checks
     check_prerequisites
 
-    # CAN 인터페이스 설정
+    # CAN interface setup
     setup_can_interface
 
-    # ECU 시뮬레이터가 응답할 때까지 짧은 대기
-    print_info "ECU 시뮬레이터 응답 대기 중..."
+    # Brief wait for ECU simulator response
+    print_info "Waiting for ECU simulator response..."
     sleep 0.5
 
-    # 테스트 실행
+    # Run tests
     run_all_pid_tests
     run_ramp_test
     run_stress_test
 
-    # 결과 요약
+    # Print summary
     print_summary
 }
 
-# 스크립트 직접 실행 시에만 main 호출
-# source로 임포트된 경우 함수만 정의
+# Only call main when script is executed directly
+# When sourced via source, only define functions
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi

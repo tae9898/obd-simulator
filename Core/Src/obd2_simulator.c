@@ -1,21 +1,21 @@
 /**
  * @file    obd2_simulator.c
- * @brief   OBD-II ECU 시뮬레이터 구현
- * @note    CAN 요청 파싱, PID별 응답 생성, 시뮬레이션 값 주기적 업데이트
+ * @brief   OBD-II ECU simulator implementation
+ * @note    CAN request parsing, PID-specific response generation, periodic simulation value update
  */
 
 #include "obd2_simulator.h"
-#include "task.h"            /* taskENTER/EXIT_CRITICAL (DTC 테이블 크로스태스크 보호) */
+#include "task.h"            /* taskENTER/EXIT_CRITICAL (DTC table cross-task protection) */
 #include <string.h>
 
-/* === 시뮬레이션 상태 전역 변수 (정의는 main.c에 있음) === */
+/* === Simulation state global variables (defined in main.c) === */
 
 /**
- * @brief  OBD-II Mode 01 순수 로직 핸들러
- * @param  pid:     요청된 PID
- * @param  pTxData: 응답 버퍼 (최소 8바이트)
- * @retval 응답 길이 (0 = 미지원 PID)
- * @note   CAN I/O 없음. UDS 디스패처에서 호출됨.
+ * @brief  OBD-II Mode 01 pure logic handler
+ * @param  pid:     requested PID
+ * @param  pTxData: response buffer (minimum 8 bytes)
+ * @retval response length (0 = unsupported PID)
+ * @note   No CAN I/O. Called from UDS dispatcher.
  */
 uint8_t OBD2_HandleService01(uint8_t pid, uint8_t *pTxData)
 {
@@ -40,26 +40,26 @@ uint8_t OBD2_HandleService01(uint8_t pid, uint8_t *pTxData)
 }
 
 /**
- * @brief  시뮬레이션 상태 값을 주기적으로 업데이트
- * @param  pState: 시뮬레이션 상태 구조체
+ * @brief  Periodically update simulation state values
+ * @param  pState: simulation state structure
  *
- * @note   10ms마다 호출됨:
- *         - RPM: 800~4000 RPM 램프 업/다운 반복 (10 RPM/10ms = 1000 RPM/s)
- *         - 냉각수 온도: 80~105°C 서서히 변화 (0.1°C/10ms = 10°C/s)
- *         - 차속: 0~120 km/h 서서히 변화 (1 km/h/10ms = 100 km/h/s)
+ * @note   Called every 10ms:
+ *         - RPM: 800~4000 RPM ramp up/down cycle (10 RPM/10ms = 1000 RPM/s)
+ *         - Coolant temperature: 80~105C gradual change (0.1C/10ms = 10C/s)
+ *         - Vehicle speed: 0~120 km/h gradual change (1 km/h/10ms = 100 km/h/s)
  */
 void OBD2_UpdateSimValues(OBD2_SimState_t *pState)
 {
-    /* --- 엔진 RPM 램프 시뮬레이션 --- */
+    /* --- Engine RPM ramp simulation --- */
     if (pState->rpm_direction == 0U) {
-        /* 램프 업: RPM 증가 */
+        /* Ramp up: increase RPM */
         pState->engine_rpm += RPM_RAMP_STEP;
         if (pState->engine_rpm >= RPM_MAX) {
             pState->engine_rpm = RPM_MAX;
-            pState->rpm_direction = 1U;  /* 방향 전환: 램프 다운 */
+            pState->rpm_direction = 1U;  /* Direction switch: ramp down */
         }
     } else {
-        /* 램프 다운: RPM 감소 */
+        /* Ramp down: decrease RPM */
         if (pState->engine_rpm > RPM_IDLE) {
             if (pState->engine_rpm < (RPM_IDLE + RPM_RAMP_STEP)) {
                 pState->engine_rpm = RPM_IDLE;
@@ -69,20 +69,20 @@ void OBD2_UpdateSimValues(OBD2_SimState_t *pState)
         }
         if (pState->engine_rpm <= RPM_IDLE) {
             pState->engine_rpm = RPM_IDLE;
-            pState->rpm_direction = 0U;  /* 방향 전환: 램프 업 */
+            pState->rpm_direction = 0U;  /* Direction switch: ramp up */
         }
     }
 
-    /* --- 냉각수 온도 서서히 변화 --- */
+    /* --- Coolant temperature gradual change --- */
     if (pState->temp_direction == 0U) {
-        /* 온도 증가 */
+        /* Temperature increase */
         pState->coolant_temp += COOLANT_TEMP_STEP;
         if (pState->coolant_temp >= COOLANT_TEMP_MAX) {
             pState->coolant_temp = COOLANT_TEMP_MAX;
             pState->temp_direction = 1U;
         }
     } else {
-        /* 온도 감소 */
+        /* Temperature decrease */
         if (pState->coolant_temp > COOLANT_TEMP_MIN) {
             if (pState->coolant_temp < (COOLANT_TEMP_MIN + COOLANT_TEMP_STEP)) {
                 pState->coolant_temp = COOLANT_TEMP_MIN;
@@ -96,16 +96,16 @@ void OBD2_UpdateSimValues(OBD2_SimState_t *pState)
         }
     }
 
-    /* --- 차속 서서히 변화 --- */
+    /* --- Vehicle speed gradual change --- */
     if (pState->speed_direction == 0U) {
-        /* 차속 증가 */
+        /* Speed increase */
         pState->vehicle_speed += VEHICLE_SPEED_STEP;
         if (pState->vehicle_speed >= VEHICLE_SPEED_MAX) {
             pState->vehicle_speed = VEHICLE_SPEED_MAX;
             pState->speed_direction = 1U;
         }
     } else {
-        /* 차속 감소 */
+        /* Speed decrease */
         if (pState->vehicle_speed > VEHICLE_SPEED_MIN) {
             pState->vehicle_speed -= VEHICLE_SPEED_STEP;
         }
@@ -117,15 +117,15 @@ void OBD2_UpdateSimValues(OBD2_SimState_t *pState)
 }
 
 /**
- * @brief  PID 0x00: 지원 PID 비트맵 응답 생성
+ * @brief  PID 0x00: Generate supported PID bitmap response
  *
- * @note   비트맵 형식: 각 비트가 해당 PID 지원 여부를 나타냄
+ * @note   Bitmap format: each bit indicates support for the corresponding PID
  *         Byte 4 (PID 0x00~0x07): Bit0=PID01, Bit1=PID02, ...
  *         Byte 5 (PID 0x08~0x0F): Bit0=PID09, Bit1=PID0A, ...
  *         Byte 6 (PID 0x10~0x17): Bit0=PID11, ...
  *         Byte 7 (PID 0x18~0x1F): Bit0=PID19, ...
  *
- *         지원 PID: 0x05, 0x0C, 0x0D
+ *         Supported PIDs: 0x05, 0x0C, 0x0D
  *         Byte 4: Bit4(0x05) -> 0x10
  *         Byte 5: Bit4(0x0C), Bit5(0x0D) -> 0x18
  *         Byte 6: 0x00
@@ -133,38 +133,38 @@ void OBD2_UpdateSimValues(OBD2_SimState_t *pState)
  */
 uint8_t OBD2_GetSupportedPIDs(uint8_t *pTxData)
 {
-    /* 응답: [len, 0x41, 0x00, bitmap4, bitmap5, 0x00, 0x00, 0x00] */
-    pTxData[0] = 6U;  /* ISO-TP Single Frame: 하위 니블 = 페이로드 길이 */
+    /* Response: [len, 0x41, 0x00, bitmap4, bitmap5, 0x00, 0x00, 0x00] */
+    pTxData[0] = 6U;  /* ISO-TP Single Frame: lower nibble = payload length */
     pTxData[1] = OBD2_MODE_RESPONSE_PREFIX + OBD2_MODE_CURRENT_DATA;  /* 0x41 */
     pTxData[2] = OBD2_PID_SUPPORTED_PIDS;                              /* 0x00 */
 
-    /* PID 0x01~0x07 비트맵: PID 0x05(bit4) 지원 */
+    /* PID 0x01~0x07 bitmap: PID 0x05(bit4) supported */
     pTxData[3] = (1U << 4);  /* 0x10 */
 
-    /* PID 0x09~0x0F 비트맵: PID 0x0C(bit3), PID 0x0D(bit4) 지원 */
+    /* PID 0x09~0x0F bitmap: PID 0x0C(bit3), PID 0x0D(bit4) supported */
     pTxData[4] = (1U << 3) | (1U << 4);  /* 0x18 */
 
-    /* PID 0x11~0x17, 0x19~0x1F 비트맵: 지원 없음 */
+    /* PID 0x11~0x17, 0x19~0x1F bitmap: none supported */
     pTxData[5] = 0x00;
     pTxData[6] = 0x00;
     pTxData[7] = 0x00;
 
-    return 6U;  /* 실제 전송 DLC */
+    return 6U;  /* Actual transmit DLC */
 }
 
 /**
- * @brief  PID 0x05: 냉각수 온도 응답 생성
- * @param  pTxData: 전송 데이터 버퍼
- * @param  temp:    냉각수 온도 (Celsius, 예: 90)
+ * @brief  PID 0x05: Generate coolant temperature response
+ * @param  pTxData: transmit data buffer
+ * @param  temp:    coolant temperature (Celsius, e.g. 90)
  *
- * @note   OBD-II 인코딩: A = temp + 40 (예: 90C -> A = 130 = 0x82)
- *         응답: [03, 0x41, 0x05, A, 00, 00, 00, 00]
+ * @note   OBD-II encoding: A = temp + 40 (e.g. 90C -> A = 130 = 0x82)
+ *         Response: [03, 0x41, 0x05, A, 00, 00, 00, 00]
  */
 uint8_t OBD2_GetCoolantTemp(uint8_t *pTxData, uint8_t temp)
 {
     uint8_t encoded = (uint8_t)(temp + 40U);
 
-    pTxData[0] = 3U;  /* ISO-TP Single Frame: 3바이트 페이로드 */
+    pTxData[0] = 3U;  /* ISO-TP Single Frame: 3-byte payload */
     pTxData[1] = OBD2_MODE_RESPONSE_PREFIX + OBD2_MODE_CURRENT_DATA;  /* 0x41 */
     pTxData[2] = OBD2_PID_COOLANT_TEMP;                                /* 0x05 */
     pTxData[3] = encoded;
@@ -177,24 +177,24 @@ uint8_t OBD2_GetCoolantTemp(uint8_t *pTxData, uint8_t temp)
 }
 
 /**
- * @brief  PID 0x0C: 엔진 RPM 응답 생성
- * @param  pTxData: 전송 데이터 버퍼
- * @param  rpm:     엔진 RPM (예: 2500)
+ * @brief  PID 0x0C: Generate engine RPM response
+ * @param  pTxData: transmit data buffer
+ * @param  rpm:     engine RPM (e.g. 2500)
  *
- * @note   OBD-II 인코딩: ((A*256) + B) / 4 = RPM
- *         따라서: raw_value = RPM * 4 (예: 2500 * 4 = 10000 = 0x2710)
+ * @note   OBD-II encoding: ((A*256) + B) / 4 = RPM
+ *         Therefore: raw_value = RPM * 4 (e.g. 2500 * 4 = 10000 = 0x2710)
  *         A = raw_value >> 8, B = raw_value & 0xFF
- *         응답: [04, 0x41, 0x0C, A, B, 00, 00, 00]
+ *         Response: [04, 0x41, 0x0C, A, B, 00, 00, 00]
  */
 uint8_t OBD2_GetEngineRPM(uint8_t *pTxData, uint16_t rpm)
 {
     uint32_t raw_value = (uint32_t)rpm * 4U;
 
-    pTxData[0] = 4U;  /* ISO-TP Single Frame: 4바이트 페이로드 */
+    pTxData[0] = 4U;  /* ISO-TP Single Frame: 4-byte payload */
     pTxData[1] = OBD2_MODE_RESPONSE_PREFIX + OBD2_MODE_CURRENT_DATA;  /* 0x41 */
     pTxData[2] = OBD2_PID_ENGINE_RPM;                                  /* 0x0C */
-    pTxData[3] = (uint8_t)(raw_value >> 8U);  /* 상위 바이트 */
-    pTxData[4] = (uint8_t)(raw_value & 0xFFU); /* 하위 바이트 */
+    pTxData[3] = (uint8_t)(raw_value >> 8U);  /* High byte */
+    pTxData[4] = (uint8_t)(raw_value & 0xFFU); /* Low byte */
     pTxData[5] = 0x00;
     pTxData[6] = 0x00;
     pTxData[7] = 0x00;
@@ -203,16 +203,16 @@ uint8_t OBD2_GetEngineRPM(uint8_t *pTxData, uint16_t rpm)
 }
 
 /**
- * @brief  PID 0x0D: 차속 응답 생성
- * @param  pTxData: 전송 데이터 버퍼
- * @param  speed:   차속 (km/h, 예: 60)
+ * @brief  PID 0x0D: Generate vehicle speed response
+ * @param  pTxData: transmit data buffer
+ * @param  speed:   vehicle speed (km/h, e.g. 60)
  *
- * @note   OBD-II 인코딩: A = speed (1 km/h 단위)
- *         응답: [03, 0x41, 0x0D, A, 00, 00, 00, 00]
+ * @note   OBD-II encoding: A = speed (1 km/h units)
+ *         Response: [03, 0x41, 0x0D, A, 00, 00, 00, 00]
  */
 uint8_t OBD2_GetVehicleSpeed(uint8_t *pTxData, uint8_t speed)
 {
-    pTxData[0] = 3U;  /* ISO-TP Single Frame: 3바이트 페이로드 */
+    pTxData[0] = 3U;  /* ISO-TP Single Frame: 3-byte payload */
     pTxData[1] = OBD2_MODE_RESPONSE_PREFIX + OBD2_MODE_CURRENT_DATA;  /* 0x41 */
     pTxData[2] = OBD2_PID_VEHICLE_SPEED;                               /* 0x0D */
     pTxData[3] = speed;
@@ -235,9 +235,9 @@ DtcEntry_t g_dtc_table[OBD2_DTC_COUNT] = {
 };
 
 /**
- * @brief  시뮬 값으로 DTC 상태머신 갱신 (10ms 주기)
- * @note   fault 조건 연속 감지(debounce) → PENDING → (지속) → CONFIRMED.
- *         조건 해제 시 PENDING 은 INACTIVE 로 회수; CONFIRMED 는 clear 전까지 유지.
+ * @brief  Update DTC state machine from simulation values (10ms period)
+ * @note   Continuous fault condition detection (debounce) -> PENDING -> (sustained) -> CONFIRMED.
+ *         On condition clear: PENDING reverts to INACTIVE; CONFIRMED persists until cleared.
  */
 void OBD2_DtcUpdate(const OBD2_SimState_t *st)
 {
@@ -245,8 +245,8 @@ void OBD2_DtcUpdate(const OBD2_SimState_t *st)
         return;
     }
 
-    /* DTC 테이블을 vCanRxTask(Get/Clear) 와 공유 → 임계구역으로 보호 (H1).
-     * Mode 04(clear) 도착 중에 update 가 항목을 덮어쓰는 경쟁을 막는다. */
+    /* DTC table is shared with vCanRxTask (Get/Clear) -> protect with critical section (H1).
+     * Prevents update from overwriting entries while a Mode 04 (clear) is in progress. */
     taskENTER_CRITICAL();
     for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
         DtcEntry_t *d = &g_dtc_table[i];
@@ -254,16 +254,16 @@ void OBD2_DtcUpdate(const OBD2_SimState_t *st)
 
         switch (d->code) {
             case DTC_ENGINE_OVERTEMP:
-                /* 냉각수 과온: coolant 가 MAX(105) 에 도달 */
+                /* Coolant overtemp: coolant reaches MAX (105) */
                 cond = (st->coolant_temp >= COOLANT_TEMP_MAX) ? 1U : 0U;
                 break;
             case DTC_VSS_MALFUNCTION:
-                /* 차속 센서 불일치: 정지(0km/h)인데 고RPM(>2500) */
+                /* Vehicle speed sensor mismatch: stopped (0 km/h) but high RPM (>2500) */
                 cond = ((st->vehicle_speed == VEHICLE_SPEED_MIN) &&
                         (st->engine_rpm > 2500U)) ? 1U : 0U;
                 break;
             case DTC_COOLANT_THERMOSTAT:
-                /* 과냉/워밍업 미완료: coolant 가 MIN(80) 이하 */
+                /* Overcool / warmup incomplete: coolant at or below MIN (80) */
                 cond = (st->coolant_temp <= COOLANT_TEMP_MIN) ? 1U : 0U;
                 break;
             default:
@@ -289,7 +289,7 @@ void OBD2_DtcUpdate(const OBD2_SimState_t *st)
             }
         } else {
             d->debounce = 0U;
-            /* 조건 해제: PENDING 은 회수, CONFIRMED 는 clear 필요 */
+            /* Condition cleared: PENDING reverts to INACTIVE, CONFIRMED requires clear */
             if (d->state == DTC_STATE_PENDING) {
                 d->state = DTC_STATE_INACTIVE;
                 d->hold = 0U;

@@ -1,16 +1,16 @@
 /**
  * @file    diag_session.h
- * @brief   UDS 진단 세션 매니저 헤더
- * @note    세션 타입, 시큐리티 액세스, S3 타임아웃 관리
+ * @brief   UDS diagnostic session manager header
+ * @note    Session types, security access, S3 timeout management
  *
- * 세션이 필요한 이유:
- *   UDS에서는 현재 세션 상태에 따라 허용되는 서비스가 다름.
- *   - Default 세션: 기본 읽기만 가능 (OBD-II PID 조회 등)
- *   - Extended 세션: 고급 진단 가능 (루틴 실행, 액추에이터 제어)
- *   - Programming 세션: 펌웨어 업데이트
+ * Why sessions are needed:
+ *   In UDS, allowed services depend on the current session state.
+ *   - Default session: basic read-only (OBD-II PID queries, etc.)
+ *   - Extended session: advanced diagnostics (routine execution, actuator control)
+ *   - Programming session: firmware update
  *
- *   S3 타임아웃: 5초간 활동 없으면 Default 세션으로 자동 복귀
- *   (안전 장치: 진단 도구가 연결 끊기면 ECU가 정상 상태로 돌아감)
+ *   S3 timeout: if no activity for 5 seconds, automatically returns to Default session
+ *   (Safety mechanism: if the diagnostic tool disconnects, ECU returns to normal state)
  */
 
 #ifndef __DIAG_SESSION_H
@@ -22,58 +22,58 @@ extern "C" {
 
 #include "main.h"
 
-/* === 세션 타입 === */
-#define DIAG_SESSION_DEFAULT       0x01U  /**< 기본 세션 (읽기만) */
-#define DIAG_SESSION_PROGRAMMING   0x02U  /**< 프로그래밍 세션 (FW 업데이트) */
-#define DIAG_SESSION_EXTENDED      0x03U  /**< 확장 세션 (고급 진단) */
+/* === Session types === */
+#define DIAG_SESSION_DEFAULT       0x01U  /**< Default session (read-only) */
+#define DIAG_SESSION_PROGRAMMING   0x02U  /**< Programming session (FW update) */
+#define DIAG_SESSION_EXTENDED      0x03U  /**< Extended session (advanced diagnostics) */
 
-/* === 시큐리티 레벨 === */
-#define DIAG_SEC_LOCKED            0x00U  /**< 잠금 상태 */
-#define DIAG_SEC_LEVEL1            0x01U  /**< 언락 상태 */
+/* === Security levels === */
+#define DIAG_SEC_LOCKED            0x00U  /**< Locked state */
+#define DIAG_SEC_LEVEL1            0x01U  /**< Unlocked state */
 
-/* === S3 타임아웃 === */
+/* === S3 timeout === */
 /**
- * S3 타임아웃: 5초
- * 의미: 5초간 UDS 요청이 없으면 Default 세션으로 복귀
- * 이유: 진단 도구가 비정상 종료되어도 ECU가 안전 상태로 돌아감
+ * S3 timeout: 5 seconds
+ * Meaning: if no UDS request for 5 seconds, returns to Default session
+ * Reason: ECU returns to safe state even if diagnostic tool terminates abnormally
  */
 #define DIAG_S3_TIMEOUT_MS         5000U
 
-/* === Seed-Key 시뮬레이션 === */
+/* === Seed-Key simulation === */
 #define DIAG_SEED_XOR_MASK         0x5A3CU
 
-/* === SecurityAccess brute-force 완충 === */
+/* === SecurityAccess brute-force mitigation === */
 /**
- * 부팅 직후 짧은 시간 동안 0x27 (sendKey) 검증을 거부한다 (NRC 0x37).
- * power-on 직후 무차별 대입을 막는 최소 완충. iso14229 참조.
+ * Rejects 0x27 (sendKey) verification for a short time after boot (NRC 0x37).
+ * Minimum mitigation against power-on brute-force attacks. See ISO 14229.
  */
 #define DIAG_BOOT_DELAY_MS         1000U
 
-/* === Key 검증 결과 — 핸들러가 NRC 를 선택하기 위해 사유를 구분 ===
- * 기존 int (0/-1) 반환에서 확장: 잠금 중이거나 딜레이 미경과일 때
- * 단순 "잘못된 키"가 아닌 ISO 14229-1 표준 NRC(0x36/0x37)를 응답하기 위함.
+/* === Key verification results -- handler selects NRC by distinguishing reason ===
+ * Extended from previous int (0/-1) return: when locked or delay not elapsed,
+ * returns ISO 14229-1 standard NRC (0x36/0x37) instead of just "invalid key".
  */
 typedef enum {
-    DIAG_KEY_OK = 0,              /**< 성공 (언락) */
-    DIAG_KEY_INVALID,            /**< 키 불일치 / seed 미발행 → NRC 0x35 */
-    DIAG_KEY_EXCEEDED_ATTEMPTS,  /**< 시도 초과 / 잠금 중 → NRC 0x36 */
-    DIAG_KEY_DELAY_NOT_EXPIRED   /**< 부팅/딜레이 미경과 → NRC 0x37 */
+    DIAG_KEY_OK = 0,              /**< Success (unlock) */
+    DIAG_KEY_INVALID,            /**< Key mismatch / seed not issued -> NRC 0x35 */
+    DIAG_KEY_EXCEEDED_ATTEMPTS,  /**< Attempt exceeded / locked -> NRC 0x36 */
+    DIAG_KEY_DELAY_NOT_EXPIRED   /**< Boot/delay not elapsed -> NRC 0x37 */
 } DiagKeyResult_t;
 
-/* SecurityAccess 게이트(boot delay/lockout) — requestSeed/sendKey 공통 (M2) */
+/* SecurityAccess gate (boot delay/lockout) -- shared by requestSeed/sendKey (M2) */
 typedef enum {
     DIAG_SEC_GATE_OK = 0,
-    DIAG_SEC_GATE_DELAY,   /**< 부팅 딜레이 → NRC 0x37 */
-    DIAG_SEC_GATE_LOCKED   /**< 잠금 → NRC 0x36 */
+    DIAG_SEC_GATE_DELAY,   /**< Boot delay -> NRC 0x37 */
+    DIAG_SEC_GATE_LOCKED   /**< Locked -> NRC 0x36 */
 } DiagSecGate_t;
 
-/* === 세션 제어 블록 === */
+/* === Session control block === */
 typedef struct {
-    uint8_t  session_type;          /**< 현재 세션 타입 */
-    uint8_t  security_level;        /**< 시큐리티 레벨 (LOCKED/LEVEL1) */
-    uint16_t seed;                  /**< 마지막 생성 seed */
-    uint8_t  seed_is_fresh;         /**< seed가 아직 사용 안 됨 (재사용 방지) */
-    uint32_t last_activity_tick;    /**< 마지막 활동 시간 (ms) */
+    uint8_t  session_type;          /**< Current session type */
+    uint8_t  security_level;        /**< Security level (LOCKED/LEVEL1) */
+    uint16_t seed;                  /**< Last generated seed */
+    uint8_t  seed_is_fresh;         /**< Seed not yet used (prevents reuse) */
+    uint32_t last_activity_tick;    /**< Last activity time (ms) */
 } Diag_Session_t;
 
 /* === API === */
@@ -81,10 +81,11 @@ typedef struct {
 void DiagSession_Init(void);
 
 /**
- * @brief  통신 준비 완료 시점을 SecurityAccess boot-delay 기준점으로 설정
- * @note   DiagSession_Init() 은 scheduler 시작 전(클럭/GPIO/FDCAN 초기화 이전)이라
- *         너무 빠름 — 실제 부팅이 1초를 넘으면 boot delay 가 이미 만료되어 무의미.
- *         FDCAN 시작 등 진단 통신 준비가 끝난 시점(main) 에서 호출해야 의미가 있음.
+ * @brief  Sets the communication-ready point as the SecurityAccess boot-delay reference
+ * @note   DiagSession_Init() runs before scheduler start (before clock/GPIO/FDCAN init),
+ *         which is too early -- if actual boot exceeds 1 second, boot delay is already
+ *         expired and meaningless.
+ *         Must be called from main() after FDCAN start and diagnostic communication is ready.
  */
 void DiagSession_MarkBootReady(void);
 
@@ -93,19 +94,19 @@ int  DiagSession_SetSession(uint8_t session_type);
 uint16_t DiagSession_GenerateSeed(void);
 
 /**
- * @brief  Key 검증 (사유별 결과 반환)
+ * @brief  Key verification (returns result by reason)
  * @retval DIAG_KEY_OK / DIAG_KEY_INVALID / DIAG_KEY_EXCEEDED_ATTEMPTS /
  *         DIAG_KEY_DELAY_NOT_EXPIRED
- * @note   핸들러는 반환값에 따라 NRC 0x00(긍정)/0x35/0x36/0x37 를 선택한다.
- *         부팅 후 DIAG_BOOT_DELAY_MS 이내거나, 3회 실패 후 잠금 기간이면
- *         키 내용과 무관하게 EXCEEDED/DELAY 를 반환한다.
+ * @note   Handler selects NRC 0x00 (positive)/0x35/0x36/0x37 based on return value.
+ *         Within DIAG_BOOT_DELAY_MS after boot, or during 3-failure lockout period,
+ *         returns EXCEEDED/DELAY regardless of key content.
  */
 DiagKeyResult_t DiagSession_VerifyKey(uint16_t key);
 
 /**
- * @brief  SecurityAccess 게이트(boot delay/lockout) 공통 체크 (M2)
- * @retval OK / DELAY(0x37) / LOCKED(0x36). 잠금 만료 시 자동 리셋.
- * @note   requestSeed·sendKey 양쪽에서 호출 → seed 만 미리 받아가는 우회 방지.
+ * @brief  SecurityAccess gate (boot delay/lockout) common check (M2)
+ * @retval OK / DELAY(0x37) / LOCKED(0x36). Auto-reset on lockout expiry.
+ * @note   Called from both requestSeed and sendKey -- prevents bypass by pre-fetching seed only.
  */
 DiagSecGate_t DiagSession_CheckSecurityGate(void);
 
@@ -113,9 +114,9 @@ void DiagSession_ResetS3Timeout(void);
 void DiagSession_Tick(uint32_t now_ms);
 
 /**
- * @brief  서비스 접근 권한 확인
- * @retval 0: 허용, -1: 거부
- * @note   SID 0x31은 Extended + Security Unlock 필요
+ * @brief  Service access permission check
+ * @retval 0: allowed, -1: denied
+ * @note   SID 0x31 requires Extended + Security Unlock
  */
 int  DiagSession_CheckAccess(uint8_t sid);
 
