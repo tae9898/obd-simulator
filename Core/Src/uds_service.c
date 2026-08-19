@@ -524,6 +524,11 @@ static void handle_routine_control(const uint8_t *req, uint16_t req_len,
     if (routine_id == 0x0201U && sub == UDS_ROUTINE_START) {
         OBD2_DtcClear();
     }
+    /* RoutineControl 0x0202 (Self Test) start: inject demo CONFIRMED DTC (test hook,
+     * see OBD2_DtcInjectDemo) so 0x19 data paths are verifiable on hardware. */
+    if (routine_id == 0x0202U && sub == UDS_ROUTINE_START) {
+        OBD2_DtcInjectDemo();
+    }
 
     resp[0] = UDS_SID_ROUTINE_CONTROL + UDS_RESPONSE_SID_OFFSET;
     resp[1] = sub;
@@ -652,11 +657,60 @@ static void handle_communication_control(const uint8_t *req, uint16_t req_len,
     Debug_Print("[UDS] CommCtrl: rx=%u tx=%u\r\n", s_comm_rx_enabled, s_comm_tx_enabled);
 }
 
+/* === 0x19 ReadDTCInformation helpers (ISO 14229-1:2013 11.3) === */
+
+/* DTCSeverityAvailabilityMask: bits 5-7 severity + bit1 DTC class 1 (Annex D.3) */
+#define UDS_DTC_SEV_AVAIL_MASK    0xE2U
+/* DTCFormatIdentifier: 0x01 = ISO 14229-1 DTCAndStatusRecord (2-byte code << 8),
+ * 0x04 = WWH-OBD (0x42/0x55 only -- same 3-byte encoding, failure type 0x00) */
+#define UDS_DTC_FMT_ISO14229      0x01U
+#define UDS_DTC_FMT_WWH_OBD       0x04U
+/* FunctionalGroupIdentifier we serve (all monitored DTCs are emissions P0 codes) */
+#define UDS_FGID_EMISSIONS        0x33U
+#define UDS_FGID_ALL              0xFFU
+/* Single user-defined memory selection byte we support (sub 0x17/0x18/0x19) */
+#define UDS_MEMORY_SELECTION_1    0x01U
+/* Snapshot record number we store (one freeze frame per DTC) */
+#define UDS_DTC_SNAPSHOT_RECORD   0x01U
+
+/** Append 3-byte DTC (2-byte J2010 code << 8, failure type 0x00). Returns bytes written. */
+static uint8_t dtc_put3(uint8_t *p, uint16_t code)
+{
+    p[0] = (uint8_t)(code >> 8U);
+    p[1] = (uint8_t)(code & 0xFFU);
+    p[2] = 0x00U;
+    return 3U;
+}
+
+/** Append snapshot payload [DID(2) rpm(2) speed(1) coolant(1)] for a DTC with snapshot. */
+static uint8_t dtc_put_snapshot(uint8_t *p, const DtcEntry_t *d)
+{
+    p[0] = (uint8_t)(DTC_SNAPSHOT_DID >> 8U);
+    p[1] = (uint8_t)(DTC_SNAPSHOT_DID & 0xFFU);
+    p[2] = (uint8_t)(d->snapshot.rpm >> 8U);
+    p[3] = (uint8_t)(d->snapshot.rpm & 0xFFU);
+    p[4] = d->snapshot.speed;
+    p[5] = d->snapshot.coolant;
+    return 6U;
+}
+
+/** statusOfDTC mask match (unsupported mask bits ignored per 11.3.1) */
+static uint8_t dtc_mask_match(const DtcEntry_t *d, uint8_t mask)
+{
+    return ((OBD2_DtcStatusByte(d) & mask & OBD2_DTC_STATUS_AVAILABILITY_MASK) != 0U)
+               ? 1U : 0U;
+}
+
 /**
- * @brief  SID 0x19: ReadDTCInformation (sub 0x01/0x02 only)
- * @note   0x01 = active DTC count, 0x02 = active DTC list (code+status).
- *         Standard UDS path for OBD-II Mode 03/07.
- *         statusMask (request) is ignored -- responds with confirmed+pending combined (simulator simplification).
+ * @brief  SID 0x19: ReadDTCInformation -- all sub-functions (ISO 14229-1:2013 11.3)
+ * @note   Request [0x19, subFunction, ...], positive response [0x59, subFunction, ...].
+ *         DTC records are 3-byte (2-byte J2010 code << 8).
+ *         Zero matches -> positive response up to echo/availability mask only.
+ *         NRC 0x12 unknown sub / 0x13 bad length / 0x31 unknown DTC, record number,
+ *         memorySelection, or functionalGroupIdentifier.
+ *         Data source: g_dtc_table state machine (OBD2_DtcUpdate) + g_dtc_mirror
+ *         (archived at clear). Reading entry fields unlocked is safe here: all fields
+ *         are <=16-bit aligned scalars and cross-field tearing is cosmetic in a simulator.
  */
 static void handle_read_dtc_information(const uint8_t *req, uint16_t req_len,
                                         uint8_t *resp, uint16_t *resp_len)
@@ -666,34 +720,381 @@ static void handle_read_dtc_information(const uint8_t *req, uint16_t req_len,
                                resp, resp_len);
         return;
     }
-    uint8_t sub = (uint8_t)(req[1] & 0x7FU);  /* bit7 = suppressPosRsp */
+    uint8_t sub = (uint8_t)(req[1] & 0x7FU);  /* bit7 = suppressPosRsp (dispatch) */
+    uint16_t pos = 0U;
+    resp[pos++] = UDS_SID_READ_DTC_INFORMATION + UDS_RESPONSE_SID_OFFSET;  /* 0x59 */
+    resp[pos++] = sub;
 
     switch (sub) {
-        case 0x01U: {  /* reportNumberOfDTCByStatusMask */
-            uint8_t count = OBD2_DtcCountActive();
-            resp[0] = UDS_SID_READ_DTC_INFORMATION + UDS_RESPONSE_SID_OFFSET;  /* 0x59 */
-            resp[1] = sub;
-            resp[2] = 0x0CU;  /* DTCStatusAvailabilityMask: bit2(pending)+bit3(confirmed) */
-            resp[3] = 0x00U;  /* formatIdentifier: ISO 14229-1 (2-byte DTC) */
-            resp[4] = 0x00U;  /* DTC count high */
-            resp[5] = count;  /* DTC count low */
-            *resp_len = 6U;
-            break;
-        }
-        case 0x02U: {  /* reportDTCByStatusMask */
-            uint8_t dtc_buf[OBD2_DTC_COUNT * 3U];
-            uint8_t n = OBD2_DtcGetActiveUds(dtc_buf, OBD2_DTC_COUNT);
-            resp[0] = UDS_SID_READ_DTC_INFORMATION + UDS_RESPONSE_SID_OFFSET;
-            resp[1] = sub;
-            resp[2] = 0x0CU;  /* availabilityMask */
-            for (uint8_t i = 0U; i < n; i++) {
-                resp[(uint16_t)(3U + i * 3U)]      = dtc_buf[i * 3U];
-                resp[(uint16_t)(4U + i * 3U)]      = dtc_buf[(uint8_t)(i * 3U + 1U)];
-                resp[(uint16_t)(5U + i * 3U)]      = dtc_buf[(uint8_t)(i * 3U + 2U)];
+        case 0x01U:    /* reportNumberOfDTCByStatusMask */
+        case 0x11U:    /* reportNumberOfMirrorMemoryDTCByStatusMask */
+        case 0x12U: {  /* reportNumberOfEmissionsOBDDTCByStatusMask (all DTCs are emissions P0) */
+            if (req_len < 3U) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_INCORRECT_MSG_LEN,
+                                       resp, resp_len);
+                return;
             }
-            *resp_len = (uint16_t)(3U + (uint16_t)n * 3U);
+            uint8_t count = (sub == 0x11U) ? OBD2_MirrorCountByMask(req[2])
+                                           : OBD2_DtcCountByMask(req[2]);
+            resp[pos++] = OBD2_DTC_STATUS_AVAILABILITY_MASK;
+            resp[pos++] = UDS_DTC_FMT_ISO14229;
+            resp[pos++] = 0x00U;
+            resp[pos++] = count;
+            *resp_len = pos;
             break;
         }
+
+        case 0x02U:    /* reportDTCByStatusMask */
+        case 0x0FU:    /* reportMirrorMemoryDTCByStatusMask */
+        case 0x13U:    /* reportEmissionsOBDDTCByStatusMask */
+        case 0x17U: {  /* reportUserDefMemoryDTCByStatusMask: [statusMask, memorySelection] */
+            uint8_t min_len = (sub == 0x17U) ? 4U : 3U;
+            if (req_len < min_len) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_INCORRECT_MSG_LEN,
+                                       resp, resp_len);
+                return;
+            }
+            uint8_t mask = req[2];
+            if (sub == 0x17U) {
+                if (req[3] != UDS_MEMORY_SELECTION_1) {
+                    build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_REQUEST_OUT_OF_RANGE,
+                                           resp, resp_len);
+                    return;
+                }
+                /* memorySelection echo precedes availability mask (Table 280) */
+                resp[pos++] = req[3];
+            }
+            resp[pos++] = OBD2_DTC_STATUS_AVAILABILITY_MASK;
+            uint8_t rec[OBD2_DTC_COUNT * 4U];
+            uint8_t n = (sub == 0x0FU) ? OBD2_MirrorGetByMask(rec, OBD2_DTC_COUNT, mask)
+                                       : OBD2_DtcGetByMask(rec, OBD2_DTC_COUNT, mask);
+            for (uint8_t i = 0U; i < n; i++) {
+                resp[pos++] = rec[i * 4U];
+                resp[pos++] = rec[(uint8_t)(i * 4U + 1U)];
+                resp[pos++] = rec[(uint8_t)(i * 4U + 2U)];
+                resp[pos++] = rec[(uint8_t)(i * 4U + 3U)];
+            }
+            *resp_len = pos;
+            break;
+        }
+
+        case 0x03U: {  /* reportDTCSnapshotIdentification: {DTC(3) recordNumber}* */
+            for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
+                if (g_dtc_table[i].snapshot.valid != 0U) {
+                    pos += dtc_put3(&resp[pos], g_dtc_table[i].code);
+                    resp[pos++] = UDS_DTC_SNAPSHOT_RECORD;
+                }
+            }
+            *resp_len = pos;
+            break;
+        }
+
+        case 0x04U:    /* reportDTCSnapshotRecordByDTCNumber */
+        case 0x18U: {  /* reportUserDefMemoryDTCSnapshotRecordByDTCNumber */
+            uint8_t min_len = (sub == 0x18U) ? 7U : 6U;
+            if (req_len < min_len) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_INCORRECT_MSG_LEN,
+                                       resp, resp_len);
+                return;
+            }
+            if ((sub == 0x18U) && (req[6] != UDS_MEMORY_SELECTION_1)) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_REQUEST_OUT_OF_RANGE,
+                                       resp, resp_len);
+                return;
+            }
+            /* [19 04|18 DTC(3) recordNumber (memorySelection)] -- recordNumber is req[5],
+             * memorySelection (0x18 only) is req[6] */
+            uint8_t rec_num = req[5];
+            const DtcEntry_t *d = ((req[4] == 0x00U)
+                                       ? OBD2_DtcFindByCode((uint16_t)((uint16_t)req[2] << 8U) | req[3])
+                                       : NULL);
+            if ((d == NULL) || (rec_num == 0x00U) ||
+                ((rec_num != UDS_DTC_SNAPSHOT_RECORD) && (rec_num != 0xFFU))) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_REQUEST_OUT_OF_RANGE,
+                                       resp, resp_len);
+                return;
+            }
+            if (sub == 0x18U) {
+                resp[pos++] = req[6];  /* memorySelection echo */
+            }
+            pos += dtc_put3(&resp[pos], d->code);
+            resp[pos++] = OBD2_DtcStatusByte(d);
+            if (d->snapshot.valid != 0U) {
+                resp[pos++] = UDS_DTC_SNAPSHOT_RECORD;   /* snapshot record number */
+                resp[pos++] = 1U;                        /* numberOfIdentifiers */
+                pos += dtc_put_snapshot(&resp[pos], d);
+            }
+            *resp_len = pos;
+            break;
+        }
+
+        case 0x05U: {  /* reportDTCStoredDataByRecordNumber: {recNum DTC(3) status numIdent {DID data}}* */
+            if (req_len < 3U) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_INCORRECT_MSG_LEN,
+                                       resp, resp_len);
+                return;
+            }
+            if ((req[2] == 0x00U) ||
+                ((req[2] != UDS_DTC_SNAPSHOT_RECORD) && (req[2] != 0xFFU))) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_REQUEST_OUT_OF_RANGE,
+                                       resp, resp_len);
+                return;
+            }
+            for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
+                if (g_dtc_table[i].snapshot.valid != 0U) {
+                    resp[pos++] = UDS_DTC_SNAPSHOT_RECORD;  /* DTCStoredDataRecordNumber */
+                    pos += dtc_put3(&resp[pos], g_dtc_table[i].code);
+                    resp[pos++] = OBD2_DtcStatusByte(&g_dtc_table[i]);
+                    resp[pos++] = 1U;                       /* numberOfIdentifiers */
+                    pos += dtc_put_snapshot(&resp[pos], &g_dtc_table[i]);
+                }
+            }
+            *resp_len = pos;
+            break;
+        }
+
+        case 0x06U:    /* reportDTCExtDataRecordByDTCNumber */
+        case 0x10U:    /* reportMirrorMemoryDTCExtDataRecordByDTCNumber */
+        case 0x19U: {  /* reportUserDefMemoryDTCExtDataRecordByDTCNumber */
+            uint8_t min_len = (sub == 0x19U) ? 7U : 6U;
+            if (req_len < min_len) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_INCORRECT_MSG_LEN,
+                                       resp, resp_len);
+                return;
+            }
+            /* [19 06|10|19 DTC(3) extRecordNumber (memorySelection)] -- ext is req[5],
+             * memorySelection (0x19 only) is req[6] */
+            uint8_t ext_num = req[5];
+            uint8_t mem_sel = (sub == 0x19U) ? req[6] : 0U;
+            if ((sub == 0x19U) && (mem_sel != UDS_MEMORY_SELECTION_1)) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_REQUEST_OUT_OF_RANGE,
+                                       resp, resp_len);
+                return;
+            }
+            uint16_t code = (uint16_t)((uint16_t)req[2] << 8U) | req[3];
+            uint8_t occurrence = 0U;
+            uint8_t status = 0U;
+            if (sub == 0x10U) {
+                const DtcMirrorEntry_t *m = ((req[4] == 0x00U) ? OBD2_MirrorFindByCode(code)
+                                                               : NULL);
+                if (m == NULL) {
+                    build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_REQUEST_OUT_OF_RANGE,
+                                           resp, resp_len);
+                    return;
+                }
+                status = m->status;
+                occurrence = m->occurrence;
+            } else {
+                const DtcEntry_t *d = ((req[4] == 0x00U) ? OBD2_DtcFindByCode(code) : NULL);
+                if (d == NULL) {
+                    build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_REQUEST_OUT_OF_RANGE,
+                                           resp, resp_len);
+                    return;
+                }
+                status = OBD2_DtcStatusByte(d);
+                occurrence = d->occurrence;
+            }
+            if ((ext_num == 0x00U) || ((ext_num != DTC_EXT_RECORD_OCCURRENCE) &&
+                                       (ext_num != 0xFFU))) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_REQUEST_OUT_OF_RANGE,
+                                       resp, resp_len);
+                return;
+            }
+            if (sub == 0x19U) {
+                resp[pos++] = mem_sel;  /* memorySelection echo */
+            }
+            pos += dtc_put3(&resp[pos], code);
+            resp[pos++] = status;
+            if (occurrence != 0U) {  /* ext record present only after first failure */
+                resp[pos++] = DTC_EXT_RECORD_OCCURRENCE;
+                resp[pos++] = occurrence;
+            }
+            *resp_len = pos;
+            break;
+        }
+
+        case 0x07U: {  /* reportNumberOfDTCBySeverityMaskRecord: [severityMask, statusMask] */
+            if (req_len < 4U) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_INCORRECT_MSG_LEN,
+                                       resp, resp_len);
+                return;
+            }
+            uint8_t count = 0U;
+            for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
+                if (((g_dtc_table[i].severity & req[2] & UDS_DTC_SEV_AVAIL_MASK) != 0U) &&
+                    (dtc_mask_match(&g_dtc_table[i], req[3]) != 0U)) {
+                    count++;
+                }
+            }
+            resp[pos++] = OBD2_DTC_STATUS_AVAILABILITY_MASK;
+            resp[pos++] = UDS_DTC_FMT_ISO14229;
+            resp[pos++] = 0x00U;
+            resp[pos++] = count;
+            *resp_len = pos;
+            break;
+        }
+
+        case 0x08U: {  /* reportDTCBySeverityMaskRecord: {severity funcUnit DTC(3) status}* */
+            if (req_len < 4U) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_INCORRECT_MSG_LEN,
+                                       resp, resp_len);
+                return;
+            }
+            resp[pos++] = OBD2_DTC_STATUS_AVAILABILITY_MASK;
+            for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
+                if (((g_dtc_table[i].severity & req[2] & UDS_DTC_SEV_AVAIL_MASK) != 0U) &&
+                    (dtc_mask_match(&g_dtc_table[i], req[3]) != 0U)) {
+                    resp[pos++] = g_dtc_table[i].severity;
+                    resp[pos++] = DTC_FUNCTIONAL_UNIT;
+                    pos += dtc_put3(&resp[pos], g_dtc_table[i].code);
+                    resp[pos++] = OBD2_DtcStatusByte(&g_dtc_table[i]);
+                }
+            }
+            *resp_len = pos;
+            break;
+        }
+
+        case 0x09U: {  /* reportSeverityInformationOfDTC: single DTC, fixed 9B */
+            if (req_len < 5U) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_INCORRECT_MSG_LEN,
+                                       resp, resp_len);
+                return;
+            }
+            const DtcEntry_t *d = ((req[4] == 0x00U)
+                                       ? OBD2_DtcFindByCode((uint16_t)((uint16_t)req[2] << 8U) | req[3])
+                                       : NULL);
+            if (d == NULL) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_REQUEST_OUT_OF_RANGE,
+                                       resp, resp_len);
+                return;
+            }
+            resp[pos++] = OBD2_DTC_STATUS_AVAILABILITY_MASK;
+            resp[pos++] = d->severity;
+            resp[pos++] = DTC_FUNCTIONAL_UNIT;
+            pos += dtc_put3(&resp[pos], d->code);
+            resp[pos++] = OBD2_DtcStatusByte(d);
+            *resp_len = pos;
+            break;
+        }
+
+        case 0x0AU:    /* reportSupportedDTC: all supported DTCs regardless of status */
+        case 0x15U: {  /* reportDTCWithPermanentStatus */
+            resp[pos++] = OBD2_DTC_STATUS_AVAILABILITY_MASK;
+            for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
+                uint8_t include = (sub == 0x0AU) ? 1U : g_dtc_table[i].permanent;
+                if (include != 0U) {
+                    pos += dtc_put3(&resp[pos], g_dtc_table[i].code);
+                    resp[pos++] = OBD2_DtcStatusByte(&g_dtc_table[i]);
+                }
+            }
+            *resp_len = pos;
+            break;
+        }
+
+        case 0x0BU:    /* reportFirstTestFailedDTC */
+        case 0x0CU:    /* reportFirstConfirmedDTC */
+        case 0x0DU:    /* reportMostRecentTestFailedDTC */
+        case 0x0EU: {  /* reportMostRecentConfirmedDTC */
+            uint8_t which = (sub == 0x0BU) ? OBD2_DTC_PICK_FIRST_FAILED
+                          : (sub == 0x0CU) ? OBD2_DTC_PICK_FIRST_CONFIRMED
+                          : (sub == 0x0DU) ? OBD2_DTC_PICK_RECENT_FAILED
+                                           : OBD2_DTC_PICK_RECENT_CONFIRMED;
+            resp[pos++] = OBD2_DTC_STATUS_AVAILABILITY_MASK;
+            const DtcEntry_t *d = OBD2_DtcPick(which);
+            if (d != NULL) {
+                pos += dtc_put3(&resp[pos], d->code);
+                resp[pos++] = OBD2_DtcStatusByte(d);
+            }
+            *resp_len = pos;
+            break;
+        }
+
+        case 0x14U: {  /* reportDTCFaultDetectionCounter: {DTC(3) FDC}* prefailed only */
+            for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
+                int8_t fdc = OBD2_DtcFdc(&g_dtc_table[i]);
+                if ((fdc > 0) && (fdc < 127)) {
+                    pos += dtc_put3(&resp[pos], g_dtc_table[i].code);
+                    resp[pos++] = (uint8_t)fdc;
+                }
+            }
+            *resp_len = pos;
+            break;
+        }
+
+        case 0x16U: {  /* reportDTCExtDataRecordByRecordNumber: {DTC(3) status extData}* */
+            if (req_len < 3U) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_INCORRECT_MSG_LEN,
+                                       resp, resp_len);
+                return;
+            }
+            if (req[2] != DTC_EXT_RECORD_OCCURRENCE) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_REQUEST_OUT_OF_RANGE,
+                                       resp, resp_len);
+                return;
+            }
+            resp[pos++] = req[2];  /* DTCExtDataRecordNumber echo */
+            for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
+                if (g_dtc_table[i].occurrence != 0U) {
+                    pos += dtc_put3(&resp[pos], g_dtc_table[i].code);
+                    resp[pos++] = OBD2_DtcStatusByte(&g_dtc_table[i]);
+                    resp[pos++] = g_dtc_table[i].occurrence;
+                }
+            }
+            *resp_len = pos;
+            break;
+        }
+
+        case 0x42U: {  /* reportWWHOBDDTCByMaskRecord: [FGID, statusMask, severityMask] */
+            if (req_len < 5U) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_INCORRECT_MSG_LEN,
+                                       resp, resp_len);
+                return;
+            }
+            if ((req[2] != UDS_FGID_EMISSIONS) && (req[2] != UDS_FGID_ALL)) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_REQUEST_OUT_OF_RANGE,
+                                       resp, resp_len);
+                return;
+            }
+            resp[pos++] = req[2];  /* FGID echo */
+            resp[pos++] = OBD2_DTC_STATUS_AVAILABILITY_MASK;
+            resp[pos++] = UDS_DTC_SEV_AVAIL_MASK;
+            resp[pos++] = UDS_DTC_FMT_WWH_OBD;
+            for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
+                if (((g_dtc_table[i].severity & req[4] & UDS_DTC_SEV_AVAIL_MASK) != 0U) &&
+                    (dtc_mask_match(&g_dtc_table[i], req[3]) != 0U)) {
+                    resp[pos++] = g_dtc_table[i].severity;
+                    pos += dtc_put3(&resp[pos], g_dtc_table[i].code);
+                    resp[pos++] = OBD2_DtcStatusByte(&g_dtc_table[i]);
+                }
+            }
+            *resp_len = pos;
+            break;
+        }
+
+        case 0x55U: {  /* reportWWHOBDDTCWithPermanentStatus: [FGID] */
+            if (req_len < 3U) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_INCORRECT_MSG_LEN,
+                                       resp, resp_len);
+                return;
+            }
+            if ((req[2] != UDS_FGID_EMISSIONS) && (req[2] != UDS_FGID_ALL)) {
+                build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_REQUEST_OUT_OF_RANGE,
+                                       resp, resp_len);
+                return;
+            }
+            resp[pos++] = req[2];  /* FGID echo */
+            resp[pos++] = OBD2_DTC_STATUS_AVAILABILITY_MASK;
+            resp[pos++] = UDS_DTC_FMT_WWH_OBD;
+            for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
+                if (g_dtc_table[i].permanent != 0U) {
+                    pos += dtc_put3(&resp[pos], g_dtc_table[i].code);
+                    resp[pos++] = OBD2_DtcStatusByte(&g_dtc_table[i]);
+                }
+            }
+            *resp_len = pos;
+            break;
+        }
+
         default:
             build_negative_response(UDS_SID_READ_DTC_INFORMATION, NRC_SUB_FUNC_NOT_SUPPORTED,
                                    resp, resp_len);
