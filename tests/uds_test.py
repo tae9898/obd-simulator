@@ -71,7 +71,7 @@ class TestStatus(Enum):
 @dataclass
 class TestResult:
     name: str
-    status: TestStatus
+    status: TestStatus = TestStatus.FAIL  # unset result must not silently pass
     detail: str = ""
     raw_tx: str = ""
     raw_rx: str = ""
@@ -172,18 +172,24 @@ class UDSTester:
     # Seed-Key algorithm (same as ECU)
     SEED_XOR_MASK = 0x5A3C
 
-    def __init__(self, interface: str, bitrate: int = 500000):
+    def __init__(self, interface: str, bitrate: int = 500000, data_bitrate: int = 2000000):
         self.interface = interface
         self.bitrate = bitrate
+        self.data_bitrate = data_bitrate
         self.bus: Optional[can.Bus] = None
 
     def connect(self):
+        # fd=True: the ECU transmits responses as CAN-FD BRS frames; a classic
+        # socket silently drops them (every test times out otherwise).
         self.bus = can.Bus(
             interface='socketcan',
             channel=self.interface,
             bitrate=self.bitrate,
+            fd=True,
+            data_bitrate=self.data_bitrate,
         )
-        print(Color.info_msg(f"CAN connected: {self.interface}"))
+        print(Color.info_msg(f"CAN-FD connected: {self.interface} "
+                             f"({self.bitrate}/{self.data_bitrate} bps)"))
 
     def disconnect(self):
         if self.bus:
@@ -216,12 +222,18 @@ class UDSTester:
         return bytes(resp.data)
 
     def parse_positive(self, data: bytes, expected_sid: int) -> Optional[dict]:
-        """Parse positive response: verify SID+0x40"""
+        """Parse positive response: verify SID+0x40 (CAN-FD escape SF aware)"""
         if not data or len(data) < 2:
             return None
-        if data[1] != expected_sid + 0x40:
+        if (data[0] & 0x0F) == 0x00 and len(data) >= 3:  # CAN-FD escape SF
+            sid_resp = data[2]
+            payload = data[3:2 + data[1]]
+        else:
+            sid_resp = data[1]
+            payload = data[2:1 + (data[0] & 0x0F)]
+        if sid_resp != expected_sid + 0x40:
             return None
-        return {'sid_resp': data[1], 'payload': data[2:]}
+        return {'sid_resp': sid_resp, 'payload': payload}
 
     def parse_negative(self, data: bytes) -> Optional[dict]:
         """Parse negative response: 0x7F + SID + NRC"""
@@ -393,18 +405,20 @@ DTC_P0217 = 0x0217  # demo injected DTC (RoutineControl 0x0202 Self Test)
 
 
 def _rdtci_send(tester: UDSTester, sub: int, params: tuple) -> Optional[bytes]:
-    """Send [0x19, sub, params...] SF; return full UDS response body (SF-payload
-    extracted, CAN-FD escape SF aware) or None on timeout."""
+    """Send [0x19, sub, params...] SF; return response body WITHOUT the 0x59
+    response SID (body starts at the sub-function echo). CAN-FD escape SF aware."""
     payload = [0x19, sub] + list(params)
     resp = tester.send_uds([len(payload) & 0x0F] + payload)
     if not resp:
         return None
     data = bytes(resp)
     if (data[0] & 0x0F) == 0x00 and len(data) >= 3:  # CAN-FD escape SF
-        length = data[1]
-        return data[2:2 + length]
-    length = data[0] & 0x0F
-    return data[1:1 + length]
+        body = data[2:2 + data[1]]
+    else:
+        body = data[1:1 + (data[0] & 0x0F)]
+    # strip the response SID echo (0x59) for sub-function-first checks,
+    # keep 0x7F negative responses intact
+    return body[1:] if (body and body[0] == 0x59) else body
 
 
 def _rdtci_case(tester: UDSTester, report: TestReport, name: str,
@@ -461,8 +475,17 @@ def test_read_dtc_information(tester: UDSTester, report: TestReport):
     print(Color.header("SID 0x19: ReadDTCInformation"))
 
     # --- Phase 1: no DTC (monitored DTCs never mature in the natural ramp) ---
-    _rdtci_case(tester, report, "0x0A reportSupportedDTC empty (SAM only)",
-                0x0A, (), check=_body_ok(bytes([0x0A, 0xFF])))
+    def supported_dtc_idle(body: bytes):
+        # 0x0A always lists every supported DTC (3), all status 0x00 when idle
+        if (len(body) == 14 and body[0] == 0x0A and body[1] == 0xFF and
+                body[2:5] == bytes([0x02, 0x17, 0x00]) and body[5] == 0x00 and
+                body[6:9] == bytes([0x05, 0x00, 0x00]) and body[9] == 0x00 and
+                body[10:13] == bytes([0x01, 0x28, 0x00]) and body[13] == 0x00):
+            return True, "3 supported DTCs, all status 0x00"
+        return False, f"got {body.hex().upper()}"
+
+    _rdtci_case(tester, report, "0x0A reportSupportedDTC (3 idle DTCs)",
+                0x0A, (), check=supported_dtc_idle)
     _rdtci_case(tester, report, "0x01 count by mask 0xFF = 0",
                 0x01, (0xFF,), check=_body_ok(bytes([0x01, 0xFF, 0x01, 0x00, 0x00])))
     _rdtci_case(tester, report, "0x01 count by mask 0x08 = 0",
@@ -529,11 +552,12 @@ def test_read_dtc_information(tester: UDSTester, report: TestReport):
     if injected:
         p0217 = (DTC_P0217 >> 8, DTC_P0217 & 0xFF, 0x00)
 
-        _rdtci_case(tester, report, "0x0A one supported DTC record (P0217 confirmed)",
+        _rdtci_case(tester, report, "0x0A supported list: P0217 confirmed + 2 idle",
                     0x0A, (), check=lambda b: (
-                        (len(b) == 6 and b[0] == 0x0A and b[1] == 0xFF and
-                         b[2:5] == bytes(p0217) and (b[5] & 0x08) != 0,
-                         f"status 0x{b[5]:02X}" if len(b) == 6 else "bad len")))
+                        (len(b) == 14 and b[0] == 0x0A and b[1] == 0xFF and
+                         b[2:5] == bytes(p0217) and (b[5] & 0x08) != 0 and
+                         b[9] == 0x00 and b[13] == 0x00,
+                         f"P0217 status 0x{b[5]:02X}, others idle" if len(b) == 14 else "bad len")))
         _rdtci_case(tester, report, "0x01 count by mask 0x08 = 1",
                     0x01, (0x08,), check=_body_ok(bytes([0x01, 0xFF, 0x01, 0x00, 0x01])))
         _rdtci_case(tester, report, "0x02 mask 0x08 one record",
@@ -582,8 +606,9 @@ def test_read_dtc_information(tester: UDSTester, report: TestReport):
                     0x16, (0x01,), check=_n_records(1, 5, 2))
         _rdtci_case(tester, report, "0x17 userDefMemory list one record",
                     0x17, (0x08, 0x01), check=lambda b: (
-                        (b[0] == 0x17 and b[1] == 0x01 and b[2] == 0xFF and len(b) == 6,
-                         "memSel echo + 1 record" if len(b) == 6 else f"len {len(b)}")))
+                        (b[0] == 0x17 and b[1] == 0x01 and b[2] == 0xFF and
+                         b[3:6] == bytes(p0217) and len(b) == 7,
+                         "memSel echo + 1 record" if len(b) == 7 else f"len {len(b)}")))
         _rdtci_case(tester, report, "0x18 userDefMemory snapshot (memSel echo)",
                     0x18, p0217 + (0x01, 0x01), check=lambda b: (
                         (b[0] == 0x18 and b[1] == 0x01 and b[2:5] == bytes(p0217) and
@@ -592,7 +617,7 @@ def test_read_dtc_information(tester: UDSTester, report: TestReport):
         _rdtci_case(tester, report, "0x19 userDefMemory ext data (memSel echo)",
                     0x19, p0217 + (0x01, 0x01), check=lambda b: (
                         (b[0] == 0x19 and b[1] == 0x01 and b[2:5] == bytes(p0217) and
-                         b[5] == 0x01 and b[6] == 0x01 and len(b) == 8,
+                         b[6] == 0x01 and b[7] == 0x01 and len(b) == 8,
                          "occurrence 1" if len(b) == 8 else f"len {len(b)}")))
         _rdtci_case(tester, report, "0x42 WWH-OBD by mask one record",
                     0x42, (0x33, 0x08, 0x80,), check=lambda b: (
@@ -605,8 +630,8 @@ def test_read_dtc_information(tester: UDSTester, report: TestReport):
 
         # --- Phase 4: clear -> mirror memory retains archive ---
         tester.send_uds([0x04, 0x31, 0x01, 0x02, 0x01])  # RoutineControl 0x0201 DTC clear
-        _rdtci_case(tester, report, "0x0A empty after clear",
-                    0x0A, (), check=_body_ok(bytes([0x0A, 0xFF])))
+        _rdtci_case(tester, report, "0x0A all idle again after clear",
+                    0x0A, (), check=supported_dtc_idle)
         _rdtci_case(tester, report, "0x11 mirror count by mask 0x08 = 1",
                     0x11, (0x08,), check=_body_ok(bytes([0x11, 0xFF, 0x01, 0x00, 0x01])))
         _rdtci_case(tester, report, "0x0F mirror list one record",
