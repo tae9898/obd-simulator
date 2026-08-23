@@ -248,6 +248,12 @@ static void process_first_frame(uint32_t can_id, const uint8_t *data, uint8_t dl
         return;
     }
 
+    /* FC destination: this node's response ID (0x7E0 -> 0x7E8), not the
+     * requester's ID. Testers expect every ECU frame (FC, responses) on the
+     * response ID — sending FC to the request ID breaks tester->ECU
+     * multi-frame transfers. (Found during code-review study 2026-08-23.) */
+    uint32_t fc_id = can_id + 8U;
+
     /* §9.8.3 Table 23 (full-duplex): receive operates independently even during transmit.
      * If a segment receive is in progress, terminate current receive (notify ERROR if streaming)
      * and restart with this FF. */
@@ -298,7 +304,7 @@ static void process_first_frame(uint32_t can_id, const uint8_t *data, uint8_t dl
         if (s_stream_sink == NULL) {
             Debug_Print("[ISO-TP] FF too large: %lu, no sink -> OVERFLOW\r\n",
                         (unsigned long)total_size);
-            send_flow_control(can_id, ISO_TP_FC_OVERFLOW, 0U, 0U);
+            send_flow_control(fc_id, ISO_TP_FC_OVERFLOW, 0U, 0U);
             s_ctx.rx_state = ISO_TP_RX_IDLE;
             return;
         }
@@ -319,7 +325,7 @@ static void process_first_frame(uint32_t can_id, const uint8_t *data, uint8_t dl
         }
         Debug_Print("[ISO-TP] FF(stream) total=%lu, got=%lu\r\n",
                     (unsigned long)total_size, (unsigned long)s_ctx.rx_received);
-        send_flow_control(can_id, ISO_TP_FC_CONTINUE, ISO_TP_FC_BLOCK_SIZE, ISO_TP_FC_STMIN);
+        send_flow_control(fc_id, ISO_TP_FC_CONTINUE, ISO_TP_FC_BLOCK_SIZE, ISO_TP_FC_STMIN);
         return;
     }
 
@@ -337,7 +343,7 @@ static void process_first_frame(uint32_t can_id, const uint8_t *data, uint8_t dl
                 (unsigned long)total_size, (unsigned long)s_ctx.rx_received);
 
     /* "Continue sending" FC response */
-    send_flow_control(can_id, ISO_TP_FC_CONTINUE, ISO_TP_FC_BLOCK_SIZE, ISO_TP_FC_STMIN);
+    send_flow_control(fc_id, ISO_TP_FC_CONTINUE, ISO_TP_FC_BLOCK_SIZE, ISO_TP_FC_STMIN);
 }
 
 /**
