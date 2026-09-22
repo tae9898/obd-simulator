@@ -60,12 +60,35 @@ typedef enum {
     DTC_STATE_CONFIRMED   /* Exposed in Mode 03 (stored) */
 } DtcState_t;
 
+/* Freeze frame captured at PENDING promotion (UDS 0x19 sub 0x03/0x04/0x05) */
+typedef struct {
+    uint8_t  valid;      /* 1 = snapshot captured (not cleared) */
+    uint16_t rpm;        /* engine RPM at capture */
+    uint8_t  speed;      /* vehicle speed at capture */
+    uint8_t  coolant;    /* coolant temperature at capture */
+} DtcSnapshot_t;
+
 typedef struct {
     uint16_t   code;            /* SAE J2010 DTC (P0217 -> 0x0217) */
     DtcState_t state;
     uint8_t    debounce;        /* Consecutive condition detection counter */
     uint8_t    hold;            /* PENDING hold counter (-> CONFIRMED) */
+    /* === ISO 14229-1 (0x19 ReadDTCInformation) additions === */
+    uint8_t    severity;        /* DTCSeverity byte (ISO 14229-1 D.3), const per DTC */
+    uint16_t   fail_seq;        /* Test-failed detection order (0 = never since clear) */
+    uint8_t    occurrence;      /* Failed test count -> ext data record 0x01 */
+    uint8_t    permanent;       /* Latched at CONFIRMED (UDS 0x19 sub 0x15/0x55).
+                                 * Simulator limitation: cleared by ClearDiagnosticInformation
+                                 * (real: only cleared when the monitor passes 3 cycles). */
+    DtcSnapshot_t snapshot;     /* Freeze frame at first PENDING promotion */
 } DtcEntry_t;
+
+/* Mirror memory: CONFIRMED DTCs archived at ClearDiagnosticInformation (UDS 0x19 sub 0x0F/0x10/0x11) */
+typedef struct {
+    uint16_t code;
+    uint8_t  status;      /* statusOfDTC at archive time */
+    uint8_t  occurrence;  /* ext data record 0x01 at archive time */
+} DtcMirrorEntry_t;
 
 #define OBD2_DTC_COUNT            3U
 #define OBD2_DTC_DEBOUNCE_THRESH  5U    /* Promote to PENDING after 5 consecutive detections (=50ms) */
@@ -75,6 +98,20 @@ typedef struct {
 #define DTC_ENGINE_OVERTEMP       0x0217U  /* P0217: coolant overtemp (coolant >= MAX) */
 #define DTC_VSS_MALFUNCTION       0x0500U  /* P0500: vehicle speed=0 but high RPM */
 #define DTC_COOLANT_THERMOSTAT    0x0128U  /* P0128: coolant overcool (warmup incomplete) */
+
+/* DTCSeverity (ISO 14229-1 D.3): bit7 checkImmediately / bit6 checkAtNextHalt /
+ * bit5 maintenanceOnly / bit0-4 GTR DTC class (bit1 = Class A). */
+#define DTC_SEVERITY_OVERTEMP     0x82U  /* P0217: checkImmediately + Class A */
+#define DTC_SEVERITY_VSS          0x42U  /* P0500: checkAtNextHalt + Class A */
+#define DTC_SEVERITY_THERMOSTAT   0x22U  /* P0128: maintenanceOnly + Class A */
+
+/* DTCFunctionalUnit: no standard value -- 0x01 = powertrain (simulator definition) */
+#define DTC_FUNCTIONAL_UNIT       0x01U
+
+/* Snapshot/stored-data record content: one DID, 4 bytes [rpm(2) speed(1) coolant(1)] */
+#define DTC_SNAPSHOT_DID          0xF500U
+#define DTC_SNAPSHOT_DATA_LEN     4U
+#define DTC_EXT_RECORD_OCCURRENCE 0x01U  /* ext data record 0x01 = occurrence counter */
 
 extern DtcEntry_t g_dtc_table[OBD2_DTC_COUNT];
 
@@ -148,19 +185,59 @@ void OBD2_DtcUpdate(const OBD2_SimState_t *st);
 uint8_t OBD2_DtcGetConfirmed(uint8_t *out, uint8_t max_pairs);
 uint8_t OBD2_DtcGetPending(uint8_t *out, uint8_t max_pairs);
 
-/** Reset all DTCs to INACTIVE (Mode 04 / RoutineControl 0x0201) */
+/** Reset all DTCs to INACTIVE (Mode 04 / RoutineControl 0x0201).
+ *  CONFIRMED entries are archived to mirror memory before reset. */
 void OBD2_DtcClear(void);
 
-/** Active (confirmed+pending) DTC count -- UDS 0x19 sub 0x01 */
-uint8_t OBD2_DtcCountActive(void);
+/**
+ * @brief  Inject a demo CONFIRMED DTC (P0217) with snapshot -- test hook
+ * @note   RoutineControl 0x0202 (Self Test) start trigger. The natural simulation
+ *         ramp only dwells 1 tick at temperature extremes, so monitored DTCs never
+ *         mature on their own; this makes 0x19 data paths testable on hardware.
+ */
+void OBD2_DtcInjectDemo(void);
+
+/* === UDS 0x19 ReadDTCInformation support API (ISO 14229-1:2013) === */
+
+/** DTCStatusAvailabilityMask -- server supported statusOfDTC bits (all 8) */
+#define OBD2_DTC_STATUS_AVAILABILITY_MASK  0xFFU
 
 /**
- * @brief  Write active DTCs as [code_H, code_L, status] -- UDS 0x19 sub 0x02
- * @param  out:          output buffer (max_triples*3 bytes)
- * @param  max_triples:  maximum number of DTCs
- * @retval number of DTCs written (status: 0x08=confirmed, 0x04=pending)
+ * @brief  Compute full ISO 14229-1 D.2 statusOfDTC byte for an entry
+ * @note   bit0 testFailed = debounce>0 / bit1+bit2+bit5 = fail_seq!=0
+ *         (failed+pending latched for the operation cycle) / bit3 confirmed /
+ *         bit7 warningIndicator(MIL on confirmed).
+ *         bit4+bit6 always 0: monitor runs to completion every 10ms tick.
  */
-uint8_t OBD2_DtcGetActiveUds(uint8_t *out, uint8_t max_triples);
+uint8_t OBD2_DtcStatusByte(const DtcEntry_t *d);
+
+/** DTCFaultDetectionCounter (sub 0x14): signed scaled value, +127 = failed */
+int8_t OBD2_DtcFdc(const DtcEntry_t *d);
+
+/** Count DTCs whose (status & mask & availability) != 0 -- sub 0x01/0x07/0x11/0x12 */
+uint8_t OBD2_DtcCountByMask(uint8_t mask);
+
+/**
+ * @brief  Write mask-matching DTCs as [DTC(3B: code<<8) + statusOfDTC] records
+ * @retval number of records written (sub 0x02/0x0A/0x13/0x15/0x17)
+ */
+uint8_t OBD2_DtcGetByMask(uint8_t *out, uint8_t max_records, uint8_t mask);
+
+/** Find a supported DTC by 2-byte code (NULL = not supported) -- sub 0x04/0x06/0x09/0x18/0x19 */
+const DtcEntry_t *OBD2_DtcFindByCode(uint16_t code);
+
+/* Single-DTC selectors (sub 0x0B~0x0E): NULL when none detected */
+#define OBD2_DTC_PICK_FIRST_FAILED     0U  /* min fail_seq != 0 */
+#define OBD2_DTC_PICK_RECENT_FAILED    1U  /* max fail_seq */
+#define OBD2_DTC_PICK_FIRST_CONFIRMED  2U
+#define OBD2_DTC_PICK_RECENT_CONFIRMED 3U
+const DtcEntry_t *OBD2_DtcPick(uint8_t which);
+
+/* Mirror memory (sub 0x0F/0x10/0x11): archived at last clear */
+extern DtcMirrorEntry_t g_dtc_mirror[OBD2_DTC_COUNT];
+uint8_t OBD2_MirrorCountByMask(uint8_t mask);
+uint8_t OBD2_MirrorGetByMask(uint8_t *out, uint8_t max_records, uint8_t mask);
+const DtcMirrorEntry_t *OBD2_MirrorFindByCode(uint16_t code);
 
 /* === Global simulation state === */
 extern OBD2_SimState_t g_sim_state;

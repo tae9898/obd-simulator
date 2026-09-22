@@ -229,10 +229,19 @@ uint8_t OBD2_GetVehicleSpeed(uint8_t *pTxData, uint8_t speed)
  * ==================================================== */
 
 DtcEntry_t g_dtc_table[OBD2_DTC_COUNT] = {
-    { DTC_ENGINE_OVERTEMP,    DTC_STATE_INACTIVE, 0U, 0U },
-    { DTC_VSS_MALFUNCTION,    DTC_STATE_INACTIVE, 0U, 0U },
-    { DTC_COOLANT_THERMOSTAT, DTC_STATE_INACTIVE, 0U, 0U },
+    { DTC_ENGINE_OVERTEMP,    DTC_STATE_INACTIVE, 0U, 0U,
+      DTC_SEVERITY_OVERTEMP,   0U, 0U, 0U, { 0U, 0U, 0U, 0U } },
+    { DTC_VSS_MALFUNCTION,    DTC_STATE_INACTIVE, 0U, 0U,
+      DTC_SEVERITY_VSS,        0U, 0U, 0U, { 0U, 0U, 0U, 0U } },
+    { DTC_COOLANT_THERMOSTAT, DTC_STATE_INACTIVE, 0U, 0U,
+      DTC_SEVERITY_THERMOSTAT, 0U, 0U, 0U, { 0U, 0U, 0U, 0U } },
 };
+
+/* Mirror memory: CONFIRMED DTCs archived at last clear (UDS 0x19 sub 0x0F/0x10/0x11) */
+DtcMirrorEntry_t g_dtc_mirror[OBD2_DTC_COUNT] = { 0U };
+
+/* Test-failed detection sequence counter (increments per PENDING promotion) */
+static uint16_t s_fail_seq_counter = 0U;
 
 /**
  * @brief  Update DTC state machine from simulation values (10ms period)
@@ -278,6 +287,19 @@ void OBD2_DtcUpdate(const OBD2_SimState_t *st)
                 d->debounce >= OBD2_DTC_DEBOUNCE_THRESH) {
                 d->state = DTC_STATE_PENDING;
                 d->hold = 0U;
+                /* Test failed matured (ISO 14229-1 D.2): record order, occurrence,
+                 * freeze frame. fail_seq != 0 also drives status bits 1/5. */
+                if (s_fail_seq_counter < 0xFFFFU) {
+                    s_fail_seq_counter++;
+                }
+                d->fail_seq = s_fail_seq_counter;
+                if (d->occurrence < 0xFFU) {
+                    d->occurrence++;
+                }
+                d->snapshot.valid = 1U;
+                d->snapshot.rpm = st->engine_rpm;
+                d->snapshot.speed = st->vehicle_speed;
+                d->snapshot.coolant = st->coolant_temp;
             }
             if (d->state == DTC_STATE_PENDING) {
                 if (d->hold < 0xFFU) {
@@ -285,6 +307,7 @@ void OBD2_DtcUpdate(const OBD2_SimState_t *st)
                 }
                 if (d->hold >= OBD2_DTC_CONFIRM_HOLD) {
                     d->state = DTC_STATE_CONFIRMED;
+                    d->permanent = 1U;  /* permanentDTC latch (sim: clear on Mode 04) */
                 }
             }
         } else {
@@ -335,35 +358,99 @@ uint8_t OBD2_DtcGetPending(uint8_t *out, uint8_t max_pairs)
     return n;
 }
 
+void OBD2_DtcInjectDemo(void)
+{
+    taskENTER_CRITICAL();
+    DtcEntry_t *d = &g_dtc_table[0];  /* P0217 engine overtemp */
+    if (s_fail_seq_counter < 0xFFFFU) {
+        s_fail_seq_counter++;
+    }
+    d->fail_seq = s_fail_seq_counter;
+    d->occurrence = 1U;
+    d->state = DTC_STATE_CONFIRMED;
+    d->permanent = 1U;
+    d->debounce = 1U;  /* testFailed present at injection */
+    d->hold = 0U;
+    d->snapshot.valid = 1U;
+    d->snapshot.rpm = g_sim_state.engine_rpm;
+    d->snapshot.speed = g_sim_state.vehicle_speed;
+    d->snapshot.coolant = g_sim_state.coolant_temp;
+    taskEXIT_CRITICAL();
+}
+
 void OBD2_DtcClear(void)
 {
     taskENTER_CRITICAL();
+    /* Archive CONFIRMED DTCs to mirror memory (UDS 0x19 sub 0x0F/0x10/0x11):
+     * mirror = fault state snapshot at last clear. */
+    for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
+        if (g_dtc_table[i].state == DTC_STATE_CONFIRMED) {
+            g_dtc_mirror[i].code = g_dtc_table[i].code;
+            g_dtc_mirror[i].status = OBD2_DtcStatusByte(&g_dtc_table[i]);
+            g_dtc_mirror[i].occurrence = g_dtc_table[i].occurrence;
+        } else {
+            g_dtc_mirror[i].code = 0U;
+        }
+    }
     for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
         g_dtc_table[i].state = DTC_STATE_INACTIVE;
         g_dtc_table[i].debounce = 0U;
         g_dtc_table[i].hold = 0U;
+        g_dtc_table[i].fail_seq = 0U;
+        g_dtc_table[i].occurrence = 0U;
+        g_dtc_table[i].permanent = 0U;
+        g_dtc_table[i].snapshot.valid = 0U;
     }
+    s_fail_seq_counter = 0U;
     taskEXIT_CRITICAL();
 }
 
-/* UDS DTC status byte (ISO 14229-1 DTCStatusMask):
- *   bit2 = pendingDTC, bit3 = confirmedDTC. INACTIVE = 0. */
-static uint8_t dtc_status_byte(DtcState_t s)
+/* ====================================================
+ * UDS 0x19 ReadDTCInformation support (ISO 14229-1:2013 D.2)
+ * ==================================================== */
+
+uint8_t OBD2_DtcStatusByte(const DtcEntry_t *d)
 {
-    switch (s) {
-        case DTC_STATE_CONFIRMED: return 0x08U;  /* bit3 */
-        case DTC_STATE_PENDING:   return 0x04U;  /* bit2 */
-        default:                  return 0x00U;
+    if (d == NULL) {
+        return 0U;
     }
+    uint8_t sb = 0U;
+    if (d->debounce > 0U) {
+        sb |= 0x01U;                      /* bit0 testFailed (fault condition present) */
+    }
+    if (d->fail_seq != 0U) {
+        sb |= 0x26U;                      /* bit1 failedThisOperationCycle + bit2 pendingDTC
+                                           * (latched until cycle end/clear, ISO D.2) +
+                                           * bit5 failedSinceLastClear */
+    }
+    if (d->state == DTC_STATE_CONFIRMED) {
+        sb |= 0x08U;                      /* bit3 confirmedDTC */
+        sb |= 0x80U;                      /* bit7 warningIndicatorRequested (MIL) */
+    }
+    /* bit4/bit6 (testNotCompleted*) stay 0: monitor completes every 10ms tick */
+    return sb;
 }
 
-uint8_t OBD2_DtcCountActive(void)
+int8_t OBD2_DtcFdc(const DtcEntry_t *d)
+{
+    if (d == NULL) {
+        return 0;
+    }
+    if ((d->state == DTC_STATE_PENDING) || (d->state == DTC_STATE_CONFIRMED)) {
+        return 127;    /* test failed matured */
+    }
+    /* Prefailed: debounce 1..4 of 5 -> 25/50/75/100. Pass/idle -> 0. */
+    return (int8_t)((d->debounce < OBD2_DTC_DEBOUNCE_THRESH)
+                        ? (int8_t)(d->debounce * 25U) : 0);
+}
+
+uint8_t OBD2_DtcCountByMask(uint8_t mask)
 {
     uint8_t n = 0U;
     taskENTER_CRITICAL();
     for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
-        DtcState_t s = g_dtc_table[i].state;
-        if ((s == DTC_STATE_CONFIRMED) || (s == DTC_STATE_PENDING)) {
+        uint8_t sb = OBD2_DtcStatusByte(&g_dtc_table[i]);
+        if ((sb & mask & OBD2_DTC_STATUS_AVAILABILITY_MASK) != 0U) {
             n++;
         }
     }
@@ -371,22 +458,132 @@ uint8_t OBD2_DtcCountActive(void)
     return n;
 }
 
-uint8_t OBD2_DtcGetActiveUds(uint8_t *out, uint8_t max_triples)
+uint8_t OBD2_DtcGetByMask(uint8_t *out, uint8_t max_records, uint8_t mask)
 {
     uint8_t n = 0U;
     if (out == NULL) {
         return 0U;
     }
     taskENTER_CRITICAL();
-    for (uint8_t i = 0U; (i < OBD2_DTC_COUNT) && (n < max_triples); i++) {
-        DtcState_t s = g_dtc_table[i].state;
-        if ((s == DTC_STATE_CONFIRMED) || (s == DTC_STATE_PENDING)) {
-            out[(uint8_t)(n * 3U)]      = (uint8_t)(g_dtc_table[i].code >> 8U);
-            out[(uint8_t)(n * 3U + 1U)] = (uint8_t)(g_dtc_table[i].code & 0xFFU);
-            out[(uint8_t)(n * 3U + 2U)] = dtc_status_byte(s);
+    for (uint8_t i = 0U; (i < OBD2_DTC_COUNT) && (n < max_records); i++) {
+        uint8_t sb = OBD2_DtcStatusByte(&g_dtc_table[i]);
+        if ((sb & mask & OBD2_DTC_STATUS_AVAILABILITY_MASK) != 0U) {
+            /* 3-byte DTC record: 2-byte J2010 code << 8 (failure type 0x00) */
+            out[(uint8_t)(n * 4U)]      = (uint8_t)(g_dtc_table[i].code >> 8U);
+            out[(uint8_t)(n * 4U + 1U)] = (uint8_t)(g_dtc_table[i].code & 0xFFU);
+            out[(uint8_t)(n * 4U + 2U)] = 0x00U;
+            out[(uint8_t)(n * 4U + 3U)] = sb;
             n++;
         }
     }
     taskEXIT_CRITICAL();
     return n;
+}
+
+const DtcEntry_t *OBD2_DtcFindByCode(uint16_t code)
+{
+    const DtcEntry_t *found = NULL;
+    taskENTER_CRITICAL();
+    for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
+        if (g_dtc_table[i].code == code) {
+            found = &g_dtc_table[i];
+            break;
+        }
+    }
+    taskEXIT_CRITICAL();
+    return found;
+}
+
+const DtcEntry_t *OBD2_DtcPick(uint8_t which)
+{
+    const DtcEntry_t *best = NULL;
+    taskENTER_CRITICAL();
+    for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
+        const DtcEntry_t *d = &g_dtc_table[i];
+        uint8_t candidate;
+        switch (which) {
+            case OBD2_DTC_PICK_FIRST_FAILED:
+            case OBD2_DTC_PICK_RECENT_FAILED:
+                candidate = (d->fail_seq != 0U) ? 1U : 0U;
+                break;
+            case OBD2_DTC_PICK_FIRST_CONFIRMED:
+            case OBD2_DTC_PICK_RECENT_CONFIRMED:
+                /* First/most-recent confirmed: fail order == confirm order in this
+                 * state machine (confirm follows detection). */
+                candidate = (d->state == DTC_STATE_CONFIRMED &&
+                             d->fail_seq != 0U) ? 1U : 0U;
+                break;
+            default:
+                candidate = 0U;
+                break;
+        }
+        if (candidate == 0U) {
+            continue;
+        }
+        if (best == NULL) {
+            best = d;
+        } else if (which == OBD2_DTC_PICK_FIRST_FAILED ||
+                   which == OBD2_DTC_PICK_FIRST_CONFIRMED) {
+            if (d->fail_seq < best->fail_seq) {
+                best = d;
+            }
+        } else {
+            if (d->fail_seq > best->fail_seq) {
+                best = d;
+            }
+        }
+    }
+    taskEXIT_CRITICAL();
+    return best;
+}
+
+uint8_t OBD2_MirrorCountByMask(uint8_t mask)
+{
+    uint8_t n = 0U;
+    taskENTER_CRITICAL();
+    for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
+        if ((g_dtc_mirror[i].code != 0U) &&
+            ((g_dtc_mirror[i].status & mask &
+              OBD2_DTC_STATUS_AVAILABILITY_MASK) != 0U)) {
+            n++;
+        }
+    }
+    taskEXIT_CRITICAL();
+    return n;
+}
+
+uint8_t OBD2_MirrorGetByMask(uint8_t *out, uint8_t max_records, uint8_t mask)
+{
+    uint8_t n = 0U;
+    if (out == NULL) {
+        return 0U;
+    }
+    taskENTER_CRITICAL();
+    for (uint8_t i = 0U; (i < OBD2_DTC_COUNT) && (n < max_records); i++) {
+        if ((g_dtc_mirror[i].code != 0U) &&
+            ((g_dtc_mirror[i].status & mask &
+              OBD2_DTC_STATUS_AVAILABILITY_MASK) != 0U)) {
+            out[(uint8_t)(n * 4U)]      = (uint8_t)(g_dtc_mirror[i].code >> 8U);
+            out[(uint8_t)(n * 4U + 1U)] = (uint8_t)(g_dtc_mirror[i].code & 0xFFU);
+            out[(uint8_t)(n * 4U + 2U)] = 0x00U;
+            out[(uint8_t)(n * 4U + 3U)] = g_dtc_mirror[i].status;
+            n++;
+        }
+    }
+    taskEXIT_CRITICAL();
+    return n;
+}
+
+const DtcMirrorEntry_t *OBD2_MirrorFindByCode(uint16_t code)
+{
+    const DtcMirrorEntry_t *found = NULL;
+    taskENTER_CRITICAL();
+    for (uint8_t i = 0U; i < OBD2_DTC_COUNT; i++) {
+        if (g_dtc_mirror[i].code == code) {
+            found = &g_dtc_mirror[i];
+            break;
+        }
+    }
+    taskEXIT_CRITICAL();
+    return found;
 }
