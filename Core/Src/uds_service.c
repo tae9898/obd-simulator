@@ -301,7 +301,6 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
         switch (sid) {
             case UDS_SID_DIAG_SESSION_CTRL:
             case UDS_SID_ECU_RESET:
-            case UDS_SID_CLEAR_DIAG_INFO:
             case UDS_SID_SECURITY_ACCESS:
             case UDS_SID_ROUTINE_CONTROL:
             case UDS_SID_TESTER_PRESENT:

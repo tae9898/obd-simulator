@@ -211,6 +211,7 @@ class UDSTester:
             arbitration_id=self.REQUEST_ID,
             data=data + [0x00] * (8 - len(data)),
             is_extended_id=False,
+            is_fd=len(data) > 8,  # >8B payload (e.g. 0x23 ALFID addr+size) needs an FD frame
         )
         self.bus.send(msg)
 
