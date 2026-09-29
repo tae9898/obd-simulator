@@ -1,7 +1,7 @@
 /**
  * @file    uds_service.h
  * @brief   UDS (ISO 14229) service dispatcher header
- * @note    5 UDS services + OBD-II Mode 01 legacy bridge
+ * @note    16 UDS services + OBD-II Mode legacy bridge (see docs/uds_service_coverage.md)
  *
  * UDS Service ID (SID):
  *   First byte is SID. Response is SID + 0x40.
@@ -25,7 +25,9 @@ extern "C" {
 /* === UDS Service IDs === */
 #define UDS_SID_DIAG_SESSION_CTRL    0x10U  /**< DiagnosticSessionControl */
 #define UDS_SID_ECU_RESET           0x11U  /**< ECU Reset */
+#define UDS_SID_CLEAR_DIAG_INFO     0x14U  /**< ClearDiagnosticInformation */
 #define UDS_SID_READ_DATA_BY_ID     0x22U  /**< ReadDataByIdentifier */
+#define UDS_SID_READ_MEM_BY_ADDR    0x23U  /**< ReadMemoryByAddress */
 #define UDS_SID_SECURITY_ACCESS     0x27U  /**< SecurityAccess */
 #define UDS_SID_ROUTINE_CONTROL     0x31U  /**< RoutineControl */
 #define UDS_SID_TESTER_PRESENT      0x3EU  /**< TesterPresent (S3 keep-alive) */
@@ -36,6 +38,7 @@ extern "C" {
 #define UDS_SID_REQUEST_DOWNLOAD      0x34U /**< RequestDownload (OTA) */
 #define UDS_SID_TRANSFER_DATA         0x36U /**< TransferData (OTA) */
 #define UDS_SID_REQUEST_TRANSFER_EXIT 0x37U /**< RequestTransferExit (OTA) */
+#define UDS_SID_CONTROL_DTC_SETTING  0x85U /**< ControlDTCSetting */
 /* OBD-II services (ISO 15031-5 / SAE J1979) -- functional (0x7DF) response eligible */
 #define UDS_SID_OBD2_CURRENT_DATA   0x01U  /**< Mode 01: current data */
 #define UDS_SID_OBD2_STORED_DTC     0x03U  /**< Mode 03: stored DTC */

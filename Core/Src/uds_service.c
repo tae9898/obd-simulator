@@ -1,7 +1,7 @@
 /**
  * @file    uds_service.c
  * @brief   UDS (ISO 14229) service dispatcher implementation
- * @note    6 handlers: 0x01(OBD-II), 0x10, 0x11, 0x22, 0x27, 0x31
+ * @note    16 UDS handlers + OBD-II bridge; coverage in docs/uds_service_coverage.md
  *
  * Dispatch flow:
  *   ISO-TP reassembly complete
@@ -49,8 +49,12 @@ static void handle_session_control(const uint8_t *req, uint16_t req_len,
                                    uint8_t *resp, uint16_t *resp_len);
 static void handle_ecu_reset(const uint8_t *req, uint16_t req_len,
                              uint8_t *resp, uint16_t *resp_len);
+static void handle_clear_dtc(const uint8_t *req, uint16_t req_len,
+                             uint8_t *resp, uint16_t *resp_len);
 static void handle_read_data_by_id(const uint8_t *req, uint16_t req_len,
                                    uint8_t *resp, uint16_t *resp_len);
+static void handle_read_mem_by_addr(const uint8_t *req, uint16_t req_len,
+                                    uint8_t *resp, uint16_t *resp_len);
 static void handle_security_access(const uint8_t *req, uint16_t req_len,
                                    uint8_t *resp, uint16_t *resp_len);
 static void handle_routine_control(const uint8_t *req, uint16_t req_len,
@@ -61,6 +65,8 @@ static void handle_write_data_by_id(const uint8_t *req, uint16_t req_len,
                                     uint8_t *resp, uint16_t *resp_len);
 static void handle_communication_control(const uint8_t *req, uint16_t req_len,
                                          uint8_t *resp, uint16_t *resp_len);
+static void handle_control_dtc_setting(const uint8_t *req, uint16_t req_len,
+                                       uint8_t *resp, uint16_t *resp_len);
 static void handle_read_dtc_information(const uint8_t *req, uint16_t req_len,
                                         uint8_t *resp, uint16_t *resp_len);
 static void handle_input_output_control(const uint8_t *req, uint16_t req_len,
@@ -112,6 +118,8 @@ uint8_t UDS_IsFunctionallyAddressable(uint8_t sid)
         case UDS_SID_TESTER_PRESENT:      /* 0x3E keep-alive, functional also allowed */
             return 1U;
         case UDS_SID_COMMUNICATION_CONTROL: /* 0x28 functional broadcast allowed */
+            return 1U;
+        case UDS_SID_CONTROL_DTC_SETTING:  /* 0x85 broadcast during flash sessions */
             return 1U;
         default:
             return 0U;
@@ -171,8 +179,26 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
             handle_ecu_reset(request, request_len, response, response_len);
             break;
 
+        case UDS_SID_CLEAR_DIAG_INFO:
+            if (DiagSession_CheckAccess(sid) != 0) {
+                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
+                                       response, response_len);
+            } else {
+                handle_clear_dtc(request, request_len, response, response_len);
+            }
+            break;
+
         case UDS_SID_READ_DATA_BY_ID:
             handle_read_data_by_id(request, request_len, response, response_len);
+            break;
+
+        case UDS_SID_READ_MEM_BY_ADDR:
+            if (DiagSession_CheckAccess(sid) != 0) {
+                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
+                                       response, response_len);
+            } else {
+                handle_read_mem_by_addr(request, request_len, response, response_len);
+            }
             break;
 
         case UDS_SID_READ_DTC_INFORMATION:
@@ -202,6 +228,15 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
                                        response, response_len);
             } else {
                 handle_communication_control(request, request_len, response, response_len);
+            }
+            break;
+
+        case UDS_SID_CONTROL_DTC_SETTING:
+            if (DiagSession_CheckAccess(sid) != 0) {
+                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
+                                       response, response_len);
+            } else {
+                handle_control_dtc_setting(request, request_len, response, response_len);
             }
             break;
 
@@ -266,10 +301,12 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
         switch (sid) {
             case UDS_SID_DIAG_SESSION_CTRL:
             case UDS_SID_ECU_RESET:
+            case UDS_SID_CLEAR_DIAG_INFO:
             case UDS_SID_SECURITY_ACCESS:
             case UDS_SID_ROUTINE_CONTROL:
             case UDS_SID_TESTER_PRESENT:
             case UDS_SID_READ_DTC_INFORMATION:
+            case UDS_SID_CONTROL_DTC_SETTING:
                 *response_len = 0U;
                 break;
             default:
@@ -365,6 +402,35 @@ static void handle_ecu_reset(const uint8_t *req, uint16_t req_len,
                                    resp, resp_len);
             break;
     }
+}
+
+/**
+ * @brief  SID 0x14: ClearDiagnosticInformation
+ * @note   groupOfDTC must be 0xFFFFFF (all groups; ISO 14229-1 11.2.1).
+ *         Backend OBD2_DtcClear() is shared with Mode 04 / RoutineControl 0x0201:
+ *         resets DTC states + snapshots, archives CONFIRMED entries to mirror memory.
+ *         Simulator limitation: permanent DTCs are also cleared (real ECU clears them
+ *         only after the monitor passes 3 consecutive cycles, obd2_simulator.h).
+ */
+static void handle_clear_dtc(const uint8_t *req, uint16_t req_len,
+                             uint8_t *resp, uint16_t *resp_len)
+{
+    if (req_len != 4U) {
+        build_negative_response(UDS_SID_CLEAR_DIAG_INFO, NRC_INCORRECT_MSG_LEN,
+                               resp, resp_len);
+        return;
+    }
+    if ((req[1] != 0xFFU) || (req[2] != 0xFFU) || (req[3] != 0xFFU)) {
+        build_negative_response(UDS_SID_CLEAR_DIAG_INFO, NRC_REQUEST_OUT_OF_RANGE,
+                               resp, resp_len);
+        return;
+    }
+
+    OBD2_DtcClear();
+
+    resp[0] = UDS_SID_CLEAR_DIAG_INFO + UDS_RESPONSE_SID_OFFSET;  /* 0x54 */
+    *resp_len = 1U;
+    Debug_Print("[UDS] ClearDiagnosticInformation (group=all)\r\n");
 }
 
 /**
@@ -655,6 +721,38 @@ static void handle_communication_control(const uint8_t *req, uint16_t req_len,
     resp[1] = control;
     *resp_len = 2U;
     Debug_Print("[UDS] CommCtrl: rx=%u tx=%u\r\n", s_comm_rx_enabled, s_comm_tx_enabled);
+}
+
+/**
+ * @brief  SID 0x85: ControlDTCSetting
+ * @note   Subfunction: 0x01=on, 0x02=off. Off freezes the DTC state machine
+ *         (OBD2_DtcUpdate) -- used during flash sessions so transient faults
+ *         are not recorded. Restored to on at Default session entry
+ *         (ISO 14229-1 8.4) and at ECU reset. Functional (0x7DF) allowed.
+ */
+static void handle_control_dtc_setting(const uint8_t *req, uint16_t req_len,
+                                       uint8_t *resp, uint16_t *resp_len)
+{
+    if (req_len < 2U) {
+        build_negative_response(UDS_SID_CONTROL_DTC_SETTING, NRC_INCORRECT_MSG_LEN,
+                               resp, resp_len);
+        return;
+    }
+    uint8_t sub = (uint8_t)(req[1] & 0x7FU);  /* bit7 = suppressPosRsp */
+
+    switch (sub) {
+        case 0x01U: OBD2_DtcSettingControl(1U); break;  /* on  */
+        case 0x02U: OBD2_DtcSettingControl(0U); break;  /* off */
+        default:
+            build_negative_response(UDS_SID_CONTROL_DTC_SETTING, NRC_SUB_FUNC_NOT_SUPPORTED,
+                                   resp, resp_len);
+            return;
+    }
+
+    resp[0] = UDS_SID_CONTROL_DTC_SETTING + UDS_RESPONSE_SID_OFFSET;  /* 0xC5 */
+    resp[1] = sub;
+    *resp_len = 2U;
+    Debug_Print("[UDS] DTC setting: %s\r\n", (sub == 0x01U) ? "on" : "off");
 }
 
 /* === 0x19 ReadDTCInformation helpers (ISO 14229-1:2013 11.3) === */
@@ -1288,6 +1386,79 @@ static void handle_request_transfer_exit(const uint8_t *req, uint16_t req_len,
     *resp_len = 1U;
     Debug_Print("[UDS] OTA exit: written=%lu/%lu\r\n",
                 (unsigned long)s_xfer_written, (unsigned long)s_xfer_size);
+}
+
+/* === 0x23 ReadMemoryByAddress readable regions (STM32G431 memory map) ===
+ * Flash and SRAM are memory-mapped and directly readable; peripheral/backup
+ * registers and anything outside these ranges are rejected (NRC 0x31). */
+#define UDS_MEM_FLASH_BASE   0x08000000U
+#define UDS_MEM_FLASH_END    OTA_FLASH_END        /* 0x08020000: 128KB flash end */
+#define UDS_MEM_SRAM_BASE    0x20000000U
+#define UDS_MEM_SRAM_END     0x20008000U          /* SRAM1+SRAM2: 32KB end */
+
+/**
+ * @brief  SID 0x23: ReadMemoryByAddress
+ * @note   Request [0x23, ALFID, address..., memorySize...], response [0x63, data...].
+ *         ALFID parsing identical to 0x34 RequestDownload.
+ *         Max read = 63 bytes (single CAN-FD SF response); larger reads -> NRC 0x31
+ *         (tester splits into multiple requests).
+ *         Extended session + SecurityAccess required (memory read exposes firmware).
+ */
+static void handle_read_mem_by_addr(const uint8_t *req, uint16_t req_len,
+                                    uint8_t *resp, uint16_t *resp_len)
+{
+    if (req_len < 3U) {  /* SID + ALFID */
+        build_negative_response(UDS_SID_READ_MEM_BY_ADDR, NRC_INCORRECT_MSG_LEN,
+                               resp, resp_len);
+        return;
+    }
+
+    uint8_t alfid = req[1];
+    uint8_t alen = (uint8_t)(alfid & 0x0FU);
+    uint8_t slen = (uint8_t)((alfid >> 4U) & 0x0FU);
+    if (alen == 0U || slen == 0U || alen > 4U || slen > 4U) {
+        build_negative_response(UDS_SID_READ_MEM_BY_ADDR, NRC_REQUEST_OUT_OF_RANGE,
+                               resp, resp_len);
+        return;
+    }
+    if (req_len < (uint16_t)(2U + (uint16_t)alen + (uint16_t)slen)) {
+        build_negative_response(UDS_SID_READ_MEM_BY_ADDR, NRC_INCORRECT_MSG_LEN,
+                               resp, resp_len);
+        return;
+    }
+
+    uint32_t addr = 0U;
+    uint32_t size = 0U;
+    for (uint8_t i = 0U; i < alen; i++) {
+        addr = (addr << 8U) | req[2U + i];
+    }
+    for (uint8_t i = 0U; i < slen; i++) {
+        size = (size << 8U) | req[2U + alen + i];
+    }
+
+    /* Size limit: response must fit one buffer ([0x63] + data) */
+    if ((size == 0U) || (size > (uint32_t)(UDS_MAX_RESPONSE_SIZE - 1U))) {
+        build_negative_response(UDS_SID_READ_MEM_BY_ADDR, NRC_REQUEST_OUT_OF_RANGE,
+                               resp, resp_len);
+        return;
+    }
+
+    /* Region check (subtraction form avoids addr+size overflow) */
+    uint8_t in_flash = ((addr >= UDS_MEM_FLASH_BASE) && (addr < UDS_MEM_FLASH_END) &&
+                        (size <= (UDS_MEM_FLASH_END - addr))) ? 1U : 0U;
+    uint8_t in_sram  = ((addr >= UDS_MEM_SRAM_BASE) && (addr < UDS_MEM_SRAM_END) &&
+                        (size <= (UDS_MEM_SRAM_END - addr))) ? 1U : 0U;
+    if ((in_flash == 0U) && (in_sram == 0U)) {
+        build_negative_response(UDS_SID_READ_MEM_BY_ADDR, NRC_REQUEST_OUT_OF_RANGE,
+                               resp, resp_len);
+        return;
+    }
+
+    resp[0] = UDS_SID_READ_MEM_BY_ADDR + UDS_RESPONSE_SID_OFFSET;  /* 0x63 */
+    (void)memcpy(&resp[1], (const void *)(uintptr_t)addr, size);
+    *resp_len = (uint16_t)(1U + size);
+    Debug_Print("[UDS] ReadMemByAddr: addr=0x%08lX size=%lu\r\n",
+                (unsigned long)addr, (unsigned long)size);
 }
 
 /**

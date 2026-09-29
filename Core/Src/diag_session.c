@@ -6,6 +6,7 @@
 
 #include "diag_session.h"
 #include "uds_service.h"
+#include "obd2_simulator.h"   /* OBD2_DtcSettingControl (Default session restore) */
 #include "uart_debug.h"
 #include <string.h>
 
@@ -52,9 +53,10 @@ int DiagSession_SetSession(uint8_t session_type)
     s_session.session_type = session_type;
     s_session.last_activity_tick = HAL_GetTick();
 
-    /* Returning to Default also locks security */
+    /* Returning to Default also locks security and restores DTC setting (ISO 14229-1 8.4) */
     if (session_type == DIAG_SESSION_DEFAULT) {
         s_session.security_level = DIAG_SEC_LOCKED;
+        OBD2_DtcSettingControl(1U);
     }
 
     Debug_Print("[DIAG] Session: %u -> %u\r\n", prev, session_type);
@@ -200,9 +202,12 @@ typedef struct {
 
 static const svc_access_t k_access_rules[] = {
     { UDS_SID_ROUTINE_CONTROL,       1U, 1U },  /* 0x31 */
+    { UDS_SID_CLEAR_DIAG_INFO,       1U, 0U },  /* 0x14: Extended only */
     { UDS_SID_WRITE_DATA_BY_ID,      1U, 1U },  /* 0x2E */
     { UDS_SID_IO_CONTROL_BY_ID,      1U, 1U },  /* 0x2F */
+    { UDS_SID_READ_MEM_BY_ADDR,      1U, 1U },  /* 0x23: memory read = firmware exposure */
     { UDS_SID_COMMUNICATION_CONTROL, 1U, 0U },  /* 0x28: Extended only */
+    { UDS_SID_CONTROL_DTC_SETTING,   1U, 0U },  /* 0x85: Extended only */
     { UDS_SID_REQUEST_DOWNLOAD,      1U, 1U },  /* 0x34: OTA */
     { UDS_SID_TRANSFER_DATA,         1U, 1U },  /* 0x36: OTA */
     { UDS_SID_REQUEST_TRANSFER_EXIT, 1U, 1U },  /* 0x37: OTA */

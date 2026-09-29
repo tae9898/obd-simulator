@@ -243,14 +243,24 @@ DtcMirrorEntry_t g_dtc_mirror[OBD2_DTC_COUNT] = { 0U };
 /* Test-failed detection sequence counter (increments per PENDING promotion) */
 static uint16_t s_fail_seq_counter = 0U;
 
+/* DTC setting off flag (UDS 0x85 ControlDTCSetting): freeze state machine updates.
+ * Restored to on at Default session entry (ISO 14229-1 8.4) and at ECU reset. */
+static uint8_t s_dtc_setting_on = 1U;
+
+void OBD2_DtcSettingControl(uint8_t on)
+{
+    s_dtc_setting_on = on;
+}
+
 /**
  * @brief  Update DTC state machine from simulation values (10ms period)
  * @note   Continuous fault condition detection (debounce) -> PENDING -> (sustained) -> CONFIRMED.
  *         On condition clear: PENDING reverts to INACTIVE; CONFIRMED persists until cleared.
+ *         Frozen while DTC setting is off (UDS 0x85 sub 0x02).
  */
 void OBD2_DtcUpdate(const OBD2_SimState_t *st)
 {
-    if (st == NULL) {
+    if (st == NULL || s_dtc_setting_on == 0U) {
         return;
     }
 

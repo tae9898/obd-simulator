@@ -847,6 +847,150 @@ def test_obd2_via_uds(tester: UDSTester, report: TestReport):
 
 
 #=======================================
+# Shared helper (0x14/0x23/0x85 wire-contract checks)
+#=======================================
+def run_check(tester: UDSTester, report: TestReport, name: str, data: list,
+              expect_sid: int = None, expect_nrc: int = None) -> Optional[bytes]:
+    """Send one request, record one PASS/FAIL result.
+    expect_sid: positive response SID (checked as SID+0x40).
+    expect_nrc: expected negative response code."""
+    resp = tester.send_uds([len(data) & 0xFF] + data)
+    result = TestResult(name)
+    if resp:
+        if expect_nrc is not None:
+            neg = tester.parse_negative(resp)
+            if neg and neg['nrc'] == expect_nrc:
+                result.status = TestStatus.PASS
+                result.detail = f"NRC {neg['nrc_name']} (expected)"
+            else:
+                result.status = TestStatus.FAIL
+                got = neg['nrc_name'] if neg else "not negative"
+                result.detail = f"Expected NRC 0x{expect_nrc:02X}, got {got}"
+        else:
+            pos = tester.parse_positive(resp, expect_sid)
+            if pos:
+                result.status = TestStatus.PASS
+                result.detail = "Normal response"
+            else:
+                neg = tester.parse_negative(resp)
+                result.detail = f"NRC {neg['nrc_name']}" if neg else "Parse failed"
+        result.raw_rx = resp.hex().upper()
+    else:
+        result.status = TestStatus.FAIL
+        result.detail = "Timeout"
+    result.raw_tx = " ".join(f"{b:02X}" for b in data)
+    print(f"  {result.status.value}: {result.detail}")
+    report.add(result)
+    return resp
+
+
+def tester_unlock_security(tester: UDSTester) -> bool:
+    """Extended session + seed/key unlock (shared by secured service tests)"""
+    tester.send_uds([0x02, 0x10, 0x03])
+    time.sleep(0.05)
+    resp = tester.send_uds([0x02, 0x27, 0x01])
+    if not resp:
+        return False
+    pos = tester.parse_positive(resp, 0x27)
+    if not (pos and len(pos['payload']) >= 3):
+        return False
+    seed = (pos['payload'][1] << 8) | pos['payload'][2]
+    key = tester.compute_key(seed)
+    resp = tester.send_uds([0x04, 0x27, 0x02, (key >> 8) & 0xFF, key & 0xFF])
+    return resp is not None and tester.parse_positive(resp, 0x27) is not None
+
+
+def test_clear_dtc(tester: UDSTester, report: TestReport):
+    """SID 0x14: ClearDiagnosticInformation"""
+    print(Color.header("SID 0x14: ClearDiagnosticInformation"))
+
+    tester.send_uds([0x02, 0x10, 0x01])
+    time.sleep(0.05)
+    run_check(tester, report, "From Default session (NRC 0x33)",
+              [0x14, 0xFF, 0xFF, 0xFF], expect_nrc=0x33)
+
+    tester.send_uds([0x02, 0x10, 0x03])
+    time.sleep(0.05)
+    run_check(tester, report, "Clear all groups (0xFFFFFF)",
+              [0x14, 0xFF, 0xFF, 0xFF], expect_sid=0x14)
+    run_check(tester, report, "Wrong group (NRC 0x31)",
+              [0x14, 0x00, 0x00, 0x00], expect_nrc=0x31)
+    run_check(tester, report, "Wrong length (NRC 0x13)",
+              [0x14, 0xFF, 0xFF], expect_nrc=0x13)
+
+    tester.send_uds([0x02, 0x10, 0x01])
+
+
+def test_control_dtc_setting(tester: UDSTester, report: TestReport):
+    """SID 0x85: ControlDTCSetting"""
+    print(Color.header("SID 0x85: ControlDTCSetting"))
+
+    tester.send_uds([0x02, 0x10, 0x01])
+    time.sleep(0.05)
+    run_check(tester, report, "From Default session (NRC 0x33)",
+              [0x85, 0x01], expect_nrc=0x33)
+
+    tester.send_uds([0x02, 0x10, 0x03])
+    time.sleep(0.05)
+    run_check(tester, report, "DTC setting ON (0x01)", [0x85, 0x01], expect_sid=0x85)
+    run_check(tester, report, "DTC setting OFF (0x02)", [0x85, 0x02], expect_sid=0x85)
+    run_check(tester, report, "Unsupported sub-function 0x03 (NRC 0x12)",
+              [0x85, 0x03], expect_nrc=0x12)
+
+    tester.send_uds([0x02, 0x10, 0x01])
+
+
+def test_read_mem_by_addr(tester: UDSTester, report: TestReport):
+    """SID 0x23: ReadMemoryByAddress"""
+    print(Color.header("SID 0x23: ReadMemoryByAddress"))
+    # [0x23, ALFID=0x24 (addr 4B / size 2B), 0x08000000, 0x0010]
+    read_flash = [0x23, 0x24, 0x08, 0x00, 0x00, 0x00, 0x00, 0x10]
+
+    tester.send_uds([0x02, 0x10, 0x01])
+    time.sleep(0.05)
+    run_check(tester, report, "From Default session (NRC 0x33)",
+              read_flash, expect_nrc=0x33)
+
+    tester.send_uds([0x02, 0x10, 0x03])
+    time.sleep(0.05)
+    run_check(tester, report, "Extended but locked (NRC 0x33)",
+              read_flash, expect_nrc=0x33)
+
+    if not tester_unlock_security(tester):
+        report.add(TestResult("Flash read @0x08000000", TestStatus.SKIP,
+                              "Security unlock failed"))
+        tester.send_uds([0x02, 0x10, 0x01])
+        return
+
+    resp = run_check(tester, report, "Flash read @0x08000000 (16B)",
+                     read_flash, expect_sid=0x23)
+    # Content sanity: vector table word 0 = initial MSP (SRAM end 0x20008000)
+    result = TestResult("Flash content sanity (MSP)")
+    pos = tester.parse_positive(resp, 0x23) if resp else None
+    if pos and len(pos['payload']) >= 4:
+        msp = int.from_bytes(pos['payload'][0:4], 'little')
+        if 0x20000000 <= msp <= 0x20008000:
+            result.status = TestStatus.PASS
+            result.detail = f"MSP=0x{msp:08X} (SRAM range)"
+        else:
+            result.status = TestStatus.FAIL
+            result.detail = f"MSP=0x{msp:08X} outside SRAM"
+    else:
+        result.status = TestStatus.FAIL
+        result.detail = "No payload"
+    print(f"  {result.status.value}: {result.detail}")
+    report.add(result)
+
+    # Invalid region (peripheral space 0x00000000) and oversize (>63B) -> NRC 0x31
+    run_check(tester, report, "Invalid region (NRC 0x31)",
+              [0x23, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10], expect_nrc=0x31)
+    run_check(tester, report, "Size > 63B (NRC 0x31)",
+              [0x23, 0x24, 0x08, 0x00, 0x00, 0x00, 0x00, 0x40], expect_nrc=0x31)
+
+    tester.send_uds([0x02, 0x10, 0x01])
+
+
+#=======================================
 # vcan setup helper
 #=======================================
 def setup_vcan(interface: str) -> bool:
@@ -907,6 +1051,9 @@ def main():
         test_security_access(tester, report)
         test_routine_control(tester, report)
         test_read_dtc_information(tester, report)
+        test_clear_dtc(tester, report)
+        test_control_dtc_setting(tester, report)
+        test_read_mem_by_addr(tester, report)
 
         tester.disconnect()
 

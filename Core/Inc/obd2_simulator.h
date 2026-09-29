@@ -189,6 +189,10 @@ uint8_t OBD2_DtcGetPending(uint8_t *out, uint8_t max_pairs);
  *  CONFIRMED entries are archived to mirror memory before reset. */
 void OBD2_DtcClear(void);
 
+/** Enable(1)/disable(0) DTC state machine updates (UDS 0x85 ControlDTCSetting).
+ *  Off freezes OBD2_DtcUpdate; auto-restored on at Default session entry. */
+void OBD2_DtcSettingControl(uint8_t on);
+
 /**
  * @brief  Inject a demo CONFIRMED DTC (P0217) with snapshot -- test hook
  * @note   RoutineControl 0x0202 (Self Test) start trigger. The natural simulation
