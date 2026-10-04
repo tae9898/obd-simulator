@@ -43,7 +43,9 @@ typedef struct {
 } RS485_RxMessage_t;
 
 /* === RS485 RX Queue (ISR -> Task) === */
+#ifndef BL_BUILD
 extern QueueHandle_t xRS485RxQueue;
+#endif
 
 /* === Function declarations === */
 

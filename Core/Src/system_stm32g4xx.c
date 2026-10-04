@@ -52,8 +52,13 @@ void SystemInit(void)
      * main() -> SystemClock_Config() -> detailed clock configuration
      */
 
-    /* Vector table offset setting (Flash start address, no ITM/ETM) */
-    SCB->VTOR = FLASH_BASE;
+    /* Vector table offset: image base. The app build passes
+     * -DVTOR_FLASH_BASE=0x08005000U (sits above the bootloader); bootloader and
+     * standalone default to the flash start. */
+#ifndef VTOR_FLASH_BASE
+#define VTOR_FLASH_BASE 0x08000000U
+#endif
+    SCB->VTOR = VTOR_FLASH_BASE;
 }
 
 /**

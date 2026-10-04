@@ -5,10 +5,13 @@
  */
 
 #include "main.h"
+
+#ifndef BL_BUILD
 #include "FreeRTOS.h"
 #include "task.h"
 
 extern void xPortSysTickHandler(void);
+#endif
 
 /**
  * @brief  FDCAN1 IT0 interrupt handler
@@ -45,11 +48,14 @@ void SysTick_Handler(void)
 {
     HAL_IncTick();
 
+#ifndef BL_BUILD
     if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED) {
         xPortSysTickHandler();
     }
+#endif
 }
 
+#ifndef BL_BUILD
 /**
  * @brief  USART1 interrupt handler (RS485 receive)
  * @note   Priority 7 (lower than FDCAN=6, FreeRTOS API calls allowed)
@@ -58,6 +64,7 @@ void USART1_IRQHandler(void)
 {
     HAL_UART_IRQHandler(&huart1);
 }
+#endif
 
 /**
  * @brief  FDCAN1 IT1 interrupt handler (error only)

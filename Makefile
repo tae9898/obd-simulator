@@ -7,6 +7,7 @@
 # Target
 # ============================================
 TARGET = phase0-obd-simulator
+BL_TARGET = bootloader
 
 # ============================================
 # Build directory
@@ -119,7 +120,9 @@ OPT = -O0 -g3
 # ============================================
 # Compile flags
 # ============================================
-CFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections -fno-common
+# VTOR_FLASH_BASE: app image sits at 0x08007000 above the bootloader
+CFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections -fno-common \
+-DVTOR_FLASH_BASE=0x08007000U
 
 # ============================================
 # Assembly flags
@@ -229,9 +232,20 @@ clean:
 # ============================================
 # flash target (using st-flash)
 # ============================================
-flash: $(BUILD_DIR)/$(TARGET).bin
-	@echo 'Flashing...'
+# Full sequence: mass erase (clears BL+app+meta -- avoids stale-meta boot gate
+# traps), then bootloader, then app at 0x08005000.
+flash:
+	st-flash erase
+	$(MAKE) flash-bl
+	$(MAKE) flash-app
+
+flash-bl: $(BUILD_DIR)/bl/$(BL_TARGET).bin
+	@echo 'Flashing bootloader @0x08000000...'
 	st-flash write $< 0x08000000
+
+flash-app: $(BUILD_DIR)/$(TARGET).bin
+	@echo 'Flashing app @0x08007000...'
+	st-flash write $< 0x08007000
 
 # ============================================
 # Debug info output
@@ -245,4 +259,55 @@ disasm: $(BUILD_DIR)/$(TARGET).elf
 # ============================================
 # Helper targets
 # ============================================
-.PHONY: all clean flash size disasm
+.PHONY: all bl clean flash flash-bl flash-app size disasm
+
+# ##########################################################################################################################
+# Bootloader target (bare-metal, -DBL_BUILD, own linker script, -Os)
+# ##########################################################################################################################
+
+BL_C_SOURCES = \
+Core/Src/bl_main.c \
+Core/Src/bl_boot.c \
+Core/Src/fdcan_config.c \
+Core/Src/uart_debug.c \
+Core/Src/stm32g4xx_hal_msp.c \
+Core/Src/stm32g4xx_it.c \
+Core/Src/system_stm32g4xx.c
+
+BL_CFLAGS = $(MCU) $(C_DEFS) -DBL_BUILD $(C_INCLUDES) -Os -g -Wall -fdata-sections -ffunction-sections -fno-common
+
+BL_LDFLAGS = $(MCU) -specs=nano.specs -T STM32G431RBTX_BL.ld \
+-Wl,-Map=$(BUILD_DIR)/bl/$(BL_TARGET).map,--cref -Wl,--gc-sections
+
+BL_C_OBJECTS   = $(addprefix $(BUILD_DIR)/bl/, $(BL_C_SOURCES:.c=.o))
+BL_HAL_OBJECTS = $(addprefix $(BUILD_DIR)/bl/, $(HAL_SOURCES:.c=.o))
+BL_OBJECTS     = $(BL_C_OBJECTS) $(BL_HAL_OBJECTS) $(BUILD_DIR)/bl/startup_stm32g431xx.o
+
+bl: $(BUILD_DIR)/bl/$(BL_TARGET).elf $(BUILD_DIR)/bl/$(BL_TARGET).bin
+	@echo ' '
+	@echo 'Bootloader build complete:'
+	@$(SZ) $(BUILD_DIR)/bl/$(BL_TARGET).elf
+
+$(BUILD_DIR)/bl/$(BL_TARGET).elf: $(BL_OBJECTS) STM32G431RBTX_BL.ld | $(BUILD_DIR)
+	@echo 'Linking BL: $@'
+	$(CC) $(BL_LDFLAGS) -o $@ $(BL_OBJECTS) -lc -lm -lnosys
+
+$(BUILD_DIR)/bl/$(BL_TARGET).bin: $(BUILD_DIR)/bl/$(BL_TARGET).elf
+	@echo 'Generating BL BIN: $@'
+	$(CP) -O binary $< $@
+
+$(BUILD_DIR)/bl/Core/Src/%.o: Core/Src/%.c | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	@echo 'Compiling (BL): $<'
+	$(CC) -std=gnu11 $(BL_CFLAGS) -MMD -MP -MF $(BUILD_DIR)/bl/Core/Src/$*.d -c -o $@ $<
+
+$(BUILD_DIR)/bl/Drivers/STM32G4xx_HAL_Driver/Src/%.o: Drivers/STM32G4xx_HAL_Driver/Src/%.c | $(BUILD_DIR)
+	@mkdir -p $(dir $@)
+	@echo 'Compiling (BL HAL): $<'
+	$(CC) -std=gnu11 $(BL_CFLAGS) -MMD -MP -MF $(BUILD_DIR)/bl/Drivers/STM32G4xx_HAL_Driver/Src/$*.d -c -o $@ $<
+
+$(BUILD_DIR)/bl/startup_stm32g431xx.o: startup_stm32g431xx.s | $(BUILD_DIR)
+	@echo 'Assembling (BL): $<'
+	$(AS) -c $(ASFLAGS) -o $@ $<
+
+-include $(BL_OBJECTS:.o=.d)

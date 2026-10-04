@@ -60,6 +60,16 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan,
  */
 uint32_t FDCAN_BytesToDlc(uint8_t bytes);
 
+#ifdef BL_BUILD
+/**
+ * @brief  Pop one frame from the bootloader RX ring buffer
+ * @param  out: destination frame
+ * @retval 1 = frame popped, 0 = empty
+ * @note   BL_BUILD only: replaces the FreeRTOS queue path
+ */
+int FDCAN_BL_Pop(CAN_RxMessage_t *out);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

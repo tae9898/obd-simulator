@@ -13,6 +13,36 @@
 static uint8_t s_rx_data[64];
 static FDCAN_RxHeaderTypeDef s_rx_header;
 
+#ifdef BL_BUILD
+/* === Bootloader RX ring buffer (replaces the FreeRTOS queue) ===
+ * Single producer (ISR) / single consumer (superloop). Depth 8 (= queue depth).
+ * Overflow drops the frame -- ISO-TP retransmission recovers. */
+static CAN_RxMessage_t s_bl_ring[8];
+static volatile uint32_t s_bl_ring_head;   /* ISR write index */
+static volatile uint32_t s_bl_ring_tail;   /* main loop read index */
+
+static void bl_ring_push(const CAN_RxMessage_t *msg)
+{
+    uint32_t head = s_bl_ring_head;
+    uint32_t next = (head + 1U) % 8U;
+    if (next == s_bl_ring_tail) {
+        return;                     /* full: drop */
+    }
+    s_bl_ring[head] = *msg;
+    s_bl_ring_head = next;
+}
+
+int FDCAN_BL_Pop(CAN_RxMessage_t *out)
+{
+    if (s_bl_ring_tail == s_bl_ring_head) {
+        return 0;                   /* empty */
+    }
+    *out = s_bl_ring[s_bl_ring_tail];
+    s_bl_ring_tail = (s_bl_ring_tail + 1U) % 8U;
+    return 1;
+}
+#endif /* BL_BUILD */
+
 /* === DLC code (0~15) -> actual byte count conversion table ===
  * HAL FDCAN: HAL_FDCAN_GetRxMessage populates rx_header.DataLength with
  * raw DLC code (0~15) (HAL extracts via >>16 from R1[19:16]).
@@ -213,7 +243,9 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan,
                                 uint32_t RxFifo0ITs)
 {
     HAL_StatusTypeDef status;
+#ifndef BL_BUILD
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+#endif
 
     if ((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) != 0U) {
 
@@ -239,8 +271,13 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan,
                 rx_msg.data[i] = s_rx_data[i];
             }
 
+#ifdef BL_BUILD
+            /* Bootloader: push to ring buffer, drained by the superloop */
+            bl_ring_push(&rx_msg);
+#else
             /* Send to Queue (ISR-only function) */
             xQueueSendFromISR(xCanRxQueue, &rx_msg, &xHigherPriorityTaskWoken);
+#endif
         }
 
         /* Re-enable all interrupts (RX + error) */
@@ -253,7 +290,9 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan,
             0U
         );
 
+#ifndef BL_BUILD
         /* Immediate context switch if Queue receive task has higher priority */
         portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+#endif
     }
 }

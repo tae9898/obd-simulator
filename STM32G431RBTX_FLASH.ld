@@ -1,12 +1,12 @@
 /**
   ******************************************************************************
   * @file      STM32G431RBTx_FLASH.ld
-  * @brief     STM32G431RB linker script (128KB Flash, 32KB RAM)
+  * @brief     STM32G431RB APP linker script (app slot, above the bootloader)
   * @note      CubeMX compatible structure
   ******************************************************************************
-  * Memory map:
-  *   FLASH (ORIGIN = 0x08000000, LENGTH = 128K)
-  *   RAM   (ORIGIN = 0x20000000, LENGTH =  32K)
+  * Memory map (see Core/Inc/bl_handoff.h):
+  *   FLASH (ORIGIN = 0x08007000, LENGTH = 92K)    app slot, BL at 0x08000000
+  *   RAM   (ORIGIN = 0x20000000, LENGTH = 32K-256B) top 256B reserved: BL handoff flag
   ******************************************************************************
   */
 
@@ -16,8 +16,8 @@ ENTRY(Reset_Handler)
 /* Memory region definitions */
 MEMORY
 {
-  RAM    (xrw)      : ORIGIN = 0x20000000, LENGTH = 32K
-  FLASH  (rx)       : ORIGIN = 0x08000000, LENGTH = 128K
+  RAM    (xrw)      : ORIGIN = 0x20000000, LENGTH = 0x7F00   /* top 256B: BL handoff flag @0x20007F00 */
+  FLASH  (rx)       : ORIGIN = 0x08007000, LENGTH = 0x17000  /* app slot 0x08007000..0x0801DFFF */
 }
 
 /* Stack and heap sizes */

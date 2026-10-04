@@ -14,10 +14,12 @@ extern "C" {
 /* === HAL header includes === */
 #include "stm32g4xx_hal.h"
 
-/* === FreeRTOS headers === */
+#ifndef BL_BUILD
+/* === FreeRTOS headers (app only -- bootloader builds bare-metal) === */
 #include "FreeRTOS.h"
 #include "queue.h"
 #include "semphr.h"
+#endif
 
 /* === CAN receive message structure (ISR -> Task delivery) === */
 typedef struct {
@@ -29,11 +31,13 @@ typedef struct {
 /** CAN RX Queue depth: maximum simultaneous pending messages */
 #define CAN_RX_QUEUE_LEN  8
 
+#ifndef BL_BUILD
 /** CAN RX Queue handle (shared by ISR and Task) */
 extern QueueHandle_t xCanRxQueue;
 
 /** UART Mutex handle (ensure Debug_Print thread safety) */
 extern SemaphoreHandle_t xUartMutex;
+#endif
 
 /* === Pin definitions === */
 /** FDCAN1 RX - MCP2562FD RXD (PA11) -- PA group */

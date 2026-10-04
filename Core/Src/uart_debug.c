@@ -85,9 +85,11 @@ void Debug_Print(const char *fmt, ...)
     if (len < 0) return;
     if (len >= (int)sizeof(buf)) len = (int)sizeof(buf) - 1;
 
+#ifndef BL_BUILD
     if (xUartMutex != NULL) {
         xSemaphoreTake(xUartMutex, portMAX_DELAY);
     }
+#endif
 
     /* Blocking transmit. (rev) DMA ring buffer path confirmed non-functional via
      * SWD+blocking test, so simplified. Debug_Print is only called from task/main
@@ -95,9 +97,11 @@ void Debug_Print(const char *fmt, ...)
      * 256B@115200 ~ 22ms < 200ms timeout. */
     HAL_UART_Transmit(&huart2, (uint8_t *)buf, (uint16_t)len, 200U);
 
+#ifndef BL_BUILD
     if (xUartMutex != NULL) {
         xSemaphoreGive(xUartMutex);
     }
+#endif
 }
 
 /**
