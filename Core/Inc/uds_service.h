@@ -1,7 +1,7 @@
 /**
  * @file    uds_service.h
  * @brief   UDS (ISO 14229) service dispatcher header
- * @note    16 UDS services + OBD-II Mode legacy bridge (see docs/uds_service_coverage.md)
+ * @note    18 UDS services + OBD-II Mode legacy bridge (see docs/uds_service_coverage.md)
  *
  * UDS Service ID (SID):
  *   First byte is SID. Response is SID + 0x40.
@@ -28,6 +28,8 @@ extern "C" {
 #define UDS_SID_CLEAR_DIAG_INFO     0x14U  /**< ClearDiagnosticInformation */
 #define UDS_SID_READ_DATA_BY_ID     0x22U  /**< ReadDataByIdentifier */
 #define UDS_SID_READ_MEM_BY_ADDR    0x23U  /**< ReadMemoryByAddress */
+#define UDS_SID_READ_DATA_PERIODIC  0x2AU  /**< ReadDataByPeriodicIdentifier */
+#define UDS_SID_DYNAMIC_DEFINE_DID  0x2CU  /**< DynamicallyDefineDataIdentifier */
 #define UDS_SID_SECURITY_ACCESS     0x27U  /**< SecurityAccess */
 #define UDS_SID_ROUTINE_CONTROL     0x31U  /**< RoutineControl */
 #define UDS_SID_TESTER_PRESENT      0x3EU  /**< TesterPresent (S3 keep-alive) */
@@ -96,6 +98,22 @@ extern "C" {
  */
 #define UDS_P2_SERVER_MAX_MS        50U     /* P2  -> 0x0032 (1ms resolution) */
 #define UDS_P2_STAR_SERVER_MAX_MS   5000U   /* P2* -> 0x01F4 (5000ms/10, 10ms resolution) */
+
+/* === Dynamic DID / periodic (0x2A/0x2C) === */
+#define UDS_DID_DYNAMIC_BASE       0xF200U  /**< dynamic DID range start (0xF2xx addressable via 0x2A) */
+#define UDS_DID_DYNAMIC_END        0xF3FFU  /**< dynamic DID range end */
+#define UDS_DYN_SLOTS              4U       /**< concurrently definable dynamic DIDs */
+#define UDS_DYN_MAX_REC            3U       /**< source records per dynamic DID */
+
+/**
+ * @brief  10ms periodic send scheduler (0x2A) -- call from main loop
+ * @note   Sends [pdid(1B) + data] ISO-format periodic frames on 0x7E8.
+ *         Rates: slow=1000ms, medium=100ms, fast=20ms (10ms tick dividers).
+ */
+void UDS_PeriodicTick(void);
+
+/** Stop all periodic transmissions (Default session entry / S3 timeout) */
+void UDS_PeriodicStopAll(void);
 
 /* === API === */
 

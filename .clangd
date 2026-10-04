@@ -1,0 +1,16 @@
+# clangd config for STM32G431 OBD/UDS ECU (arm-none-eabi-gcc cross-compile)
+# Generated for LSP symbol resolution. compile_commands.json (from `bear -- make`)
+# is the primary source; these flags are a fallback/safety-net.
+CompileFlags:
+  Compiler: arm-none-eabi-gcc
+  Add:
+    - -std=gnu11
+    - -DUSE_HAL_DRIVER
+    - -DSTM32G431xx
+    - -ICore/Inc
+    - -IDrivers/CMSIS/Device/ST/STM32G4xx/Include
+    - -IDrivers/CMSIS/Include
+    - -IDrivers/STM32G4xx_HAL_Driver/Inc
+    - -IDrivers/STM32G4xx_HAL_Driver/Inc/Legacy
+    - -IMiddlewares/FreeRTOS-Kernel/include
+    - -IMiddlewares/FreeRTOS-Kernel/portable/GCC/ARM_CM4F

@@ -4,7 +4,7 @@
 > ISO 14229-1:2013 표준 서비스 26종 + :2020 추가 1종(0x29) 기준으로
 > 구현 완료 / 명시적 미지원 / 2차 후보를 정리.
 >
-> 업데이트: 2026-09-29 · 구현체: `Core/Src/uds_service.c`
+> 업데이트: 2026-09-30 (0x2A/0x2C 구현 완료) · 구현체: `Core/Src/uds_service.c`
 
 ---
 
@@ -12,10 +12,9 @@
 
 | 분류 | 개수 | 비고 |
 |------|------|------|
-| **구현됨 (UDS)** | **16** | 0x10, 0x11, 0x14, 0x19, 0x22, 0x23, 0x27, 0x28, 0x2E, 0x2F, 0x31, 0x34, 0x36, 0x37, 0x3E, 0x85 |
+| **구현됨 (UDS)** | **18** | 0x10, 0x11, 0x14, 0x19, 0x22, 0x23, 0x27, 0x28, 0x2A, 0x2C, 0x2E, 0x2F, 0x31, 0x34, 0x36, 0x37, 0x3E, 0x85 |
 | **구현됨 (OBD-II)** | 5 | 0x01, 0x03, 0x04, 0x07, 0x09 (ISO 15031-5 브리지) |
-| **2차 후보** | 2 | 0x2A, 0x2C — 실사용 가치 있음, 스케줄러 필요 |
-| **명시적 미지원** | 9 | 아래 사유 표 참조. 물리 요청 → NRC 0x11, 기능 요청(0x7DF) → 무응답 |
+| **명시적 미지원** | 8 | 아래 사유 표 참조. 물리 요청 → NRC 0x11, 기능 요청(0x7DF) → 무응답 |
 
 **핵심 원칙**: 미구현 서비스도 ISO 규격 준수 방식으로 거부한다.
 미지원 SID는 디스패처 `default:` 경로에서 `NRC 0x11 (serviceNotSupported)` 를
@@ -46,11 +45,11 @@
 
 | SID | 서비스 | 상태 | 세션/보안 | 비고 |
 |-----|--------|------|-----------|------|
-| 0x22 | ReadDataByIdentifier | ✅ 구현 | 전체 | VIN/HW/SW/ECU명, DID 레지스트리 |
-| 0x23 | ReadMemoryByAddress | ✅ 구현 **(신규)** | Extended+보안 | 아래 §2.2 |
+| 0x22 | ReadDataByIdentifier | ✅ 구현 | 전체 | VIN/HW/SW/ECU명 + 0x2C 동적 DID |
+| 0x23 | ReadMemoryByAddress | ✅ 구현 | Extended+보안 | §2.2 |
+| 0x2A | ReadDataByPeriodicIdentifier | ✅ 구현 **(2차)** | Extended | §2.4 |
+| 0x2C | DynamicallyDefineDataIdentifier | ✅ 구현 **(2차)** | Extended | §2.5 |
 | 0x2E | WriteDataByIdentifier | ✅ 구현 | Extended+보안 | VIN(0xF190)만 쓰기 허용 |
-| 0x2A | ReadDataByPeriodicIdentifier | 🔶 2차 후보 | — | §4 참조 |
-| 0x2C | DynamicallyDefineDataIdentifier | 🔶 2차 후보 | — | §4 참조 |
 | 0x24 | ReadScalingDataByIdentifier | ❌ 미지원 | — | §3 참조 |
 | 0x3D | WriteMemoryByAddress | ❌ 미지원 | — | §3 참조 |
 
@@ -94,7 +93,7 @@
 
 ---
 
-## 2. 이번에 구현한 서비스 (이슈 #10 1차)
+## 2. 이슈 #10로 구현한 서비스 (1차: §2.1~2.3 / 2차: §2.4~2.5)
 
 ### 2.1 — 0x14 ClearDiagnosticInformation
 
@@ -131,9 +130,38 @@
 - **기능 주소(0x7DF) 허용**: 플래시 세션에서 전 ECU 브로드캐스트가 표준 사용례.
 - **NRC**: sub 오류 0x12 / Default 세션 0x33
 
+### 2.4 — 0x2A ReadDataByPeriodicIdentifier (2차, 2026-09-30)
+
+- **요청**: `[0x2A, mode, pdid...]` — pdid는 1바이트 (상위 바이트 `0xF2` 고정,
+  즉 `0xF2xx` DID의 하위 바이트). 한 요청에 여러 pdid 지정 가능.
+- **mode**: 0x01 slow(1s) / 0x02 medium(100ms) / 0x03 fast(20ms) /
+  0x04 stop (pdid 없으면 전체 정지)
+- **즉시 응답**: `[0x6A, mode]`, 이후 주기 프레임은 ISO 형식
+  `[pdid(1B) + data]` — **RSID 없음** (py-uds는 `0x6A`를 붙인 확장 형식을
+  기본으로 쓰지만 본 구현은 ISO 규격 형식만 따름)
+- **구독 조건**: pdid는 0x2C로 정의된 `0xF2xx` 동적 DID여야 함 (미정의 → 0x31)
+- **스케줄러**: `UDS_PeriodicTick()` — 메인 루프 10ms 틱에서 동작,
+  구독 슬롯 4개. 조립 실패(0x2C clear/redefine) 시 자동 구독 해제.
+- **자동 정지**: Default 세션 진입 / S3 타임아웃 / ECU 리셋
+  (`DiagSession_SetSession` → `UDS_PeriodicStopAll`)
+
+### 2.5 — 0x2C DynamicallyDefineDataIdentifier (2차, 2026-09-30)
+
+- **sub 0x01 defineByIdentifier**: `[0x2C 01 dynDID(2) {srcDID(2) pos(1) size(1)}+]`
+  — 기존 DID(VIN/HW/SW/ECU명/IO 0x0200)에서 슬라이스 조합. pos는 1부터 시작.
+- **sub 0x02 defineByMemoryAddress**: `[0x2C 02 dynDID(2) ALFID {addr size}+]`
+  — 0x23과 동일한 리전 검증(Flash/SRAM만) 재사용.
+- **sub 0x03 clear**: `[0x2C 03 dynDID(2)]` — 구독 중이면 다음 조립 실패로 자동 정지.
+- **dynDID 범위**: `0xF200-0xF3FF`. 0x2A 주기 구독은 `0xF2xx`만 가능
+  (PDID가 하위 1바이트라서).
+- **읽기**: 0x22 ReadDataByIdentifier로 일반 DID와 동일하게 조회
+  (`[0x62 dynDID data...]`). 동적 DID 중첩 정의는 미지원 (소스는 정적 DID만).
+- **제한**: 슬롯 4개 × 레코드 3개, 조립 크기 ≤ 56B (0x22 응답/0x2A SF 수용).
+- **NRC**: 길이 0x13 / 범위·소스·리전 오류 0x31 / 미지원 sub 0x12
+
 ---
 
-## 3. 명시적 미지원 사유 (9종)
+## 3. 명시적 미지원 사유 (8종)
 
 | SID | 서비스 | 미지원 사유 | 필요 시 대응 |
 |-----|--------|-------------|--------------|
@@ -149,17 +177,9 @@
 
 ---
 
-## 4. 2차 후보 (0x2A / 0x2C)
+## 4. 2차 후보 → 구현 완료 (2026-09-30)
 
-| SID | 서비스 | 가치 | 필요 작업 |
-|-----|--------|------|-----------|
-| 0x2C | DynamicallyDefineDataIdentifier | 여러 DID/오프셋을 조합한 가상 DID 정의 — 테스터 고급 시나리오 | 정의 테이블(최대 2~3개 슬롯) + 0x22 경유 읽기 |
-| 0x2A | ReadDataByPeriodicIdentifier | 지정 DID 주기 자동 송신 (SlowRate/MediumRate/FastRate) | ISO-TP TX 태스크에 주기 송신 스케줄러 추가 |
-
-두 서비스는 세트로 설계(0x2C로 정의 → 0x2A로 주기 조회)하는 것이 표준적.
-**선행 조건**: RAM 여유 확인 — 주기 송신 버퍼·스케줄러가 현재 대역폭
-(2026-07 기준 RAM ~73%)에서 들어가는지 점검 필요.
-`UDS_IsFunctionallyAddressable`·suppressPosRsp 처리는 0x2A만 sub-function 기반.
+0x2A/0x2C 2종은 §2.4/§2.5로 구현 완료됨. RAM 영향 +176B (bss 22068/32768, 67%).
 
 ---
 
@@ -172,8 +192,10 @@
 | `test_clear_dtc` | Default 세션 거부(0x33) / 전체 그룹 소거(0x54) / 잘못된 group(0x31) / 길이 오류(0x13) |
 | `test_control_dtc_setting` | Default 세션 거부 / on(0xC5 01) / off(0xC5 02) / 미지원 sub(0x12) |
 | `test_read_mem_by_addr` | Default 세션 거부 / 잠금 상태 거부 / 플래시 읽기@0x08000000 (MSP값 검증으로 실제 메모리 내용 확인) / 불가 리전(0x31) / 63B 초과(0x31) |
+| `test_dynamic_define_did` | 세션 거부 / DID 슬라이스 정의 + 0x22 조립 조회 / 메모리 주소 정의 + 0x23 직접 읽기와 일치 검증 / 알 수 없는 소스·범위 초과·영역 외·불가 리전(0x31) / clear 후 0x31 |
+| `test_periodic_read` | 세션 거부 / fast 구독(250ms에 13프레임, 데이터 일치) / stop 후 침묵 / medium 속도 / Default 세션 자동 정지 |
 
-하드웨어 실행 (테스트 리그: STLINK-V3 + gs_usb can0):
+하드웨어 실행 (테스트 리그: STLINK-V3 + canable/candleLight can0) — **95/95 PASS (2026-09-30)**:
 
 ```bash
 # 플래시 후
@@ -184,7 +206,9 @@ sudo python3 tests/uds_test.py can0
 
 ## 6. 이슈 #10 대응 결론
 
-1. **1차 구현 완료**: 0x14, 0x23, 0x85 — 실사용 빈도·구현 비용 기준 상위 3개.
-2. **2차 후보**: 0x2A, 0x2C — 스케줄러 설계 후 착수.
-3. **나머지 9종**: 위 §3 사유로 명시적 미지원. NRC 0x11 응답은 ISO 규격상
+1. **1차 구현 완료 (2026-09-29)**: 0x14, 0x23, 0x85.
+2. **2차 구현 완료 (2026-09-30)**: 0x2A, 0x2C — 주기 송신 스케줄러 포함.
+3. **나머지 8종**: 위 §3 사유로 명시적 미지원. NRC 0x11 응답은 ISO 규격상
    정당하며, 전수 구현은 시뮬레이터 목적(UDS 학습·테스트 도구)에 부합하지 않음.
+
+표준 26종 중 18종 구현 + 8종 정당 거부 = 이슈 #10 요청에 대한 완결 대응.

@@ -53,10 +53,12 @@ int DiagSession_SetSession(uint8_t session_type)
     s_session.session_type = session_type;
     s_session.last_activity_tick = HAL_GetTick();
 
-    /* Returning to Default also locks security and restores DTC setting (ISO 14229-1 8.4) */
+    /* Returning to Default also locks security, restores DTC setting
+     * (ISO 14229-1 8.4) and stops periodic transmission (0x2A). */
     if (session_type == DIAG_SESSION_DEFAULT) {
         s_session.security_level = DIAG_SEC_LOCKED;
         OBD2_DtcSettingControl(1U);
+        UDS_PeriodicStopAll();
     }
 
     Debug_Print("[DIAG] Session: %u -> %u\r\n", prev, session_type);
@@ -206,6 +208,8 @@ static const svc_access_t k_access_rules[] = {
     { UDS_SID_WRITE_DATA_BY_ID,      1U, 1U },  /* 0x2E */
     { UDS_SID_IO_CONTROL_BY_ID,      1U, 1U },  /* 0x2F */
     { UDS_SID_READ_MEM_BY_ADDR,      1U, 1U },  /* 0x23: memory read = firmware exposure */
+    { UDS_SID_READ_DATA_PERIODIC,    1U, 0U },  /* 0x2A: Extended only */
+    { UDS_SID_DYNAMIC_DEFINE_DID,    1U, 0U },  /* 0x2C: Extended only */
     { UDS_SID_COMMUNICATION_CONTROL, 1U, 0U },  /* 0x28: Extended only */
     { UDS_SID_CONTROL_DTC_SETTING,   1U, 0U },  /* 0x85: Extended only */
     { UDS_SID_REQUEST_DOWNLOAD,      1U, 1U },  /* 0x34: OTA */

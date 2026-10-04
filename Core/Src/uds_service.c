@@ -19,6 +19,8 @@
 #include "uart_debug.h"
 #include "vehicle_config.h"
 #include "ota_flash.h"   /* OTA flash erase/write (0x34/0x36/0x37) */
+#include "iso_tp.h"      /* ISO_TP_SendResponse (0x2A periodic frames) */
+#include "can_addressing.h" /* CAN_ID_PHYSICAL_RESP */
 #include <string.h>
 
 /* === ECU identity information (values sourced from vehicle_config.h single config) === */
@@ -41,6 +43,99 @@ static const did_read_t k_did_read[] = {
     { UDS_DID_ECU_NAME,   s_ecu_name   },
 };
 
+/* Virtual IO port (0x2F shortTermAdjustment target, single byte) */
+static uint8_t s_io_port = 0U;
+
+/* === Dynamic DID state (0x2C DynamicallyDefineDataIdentifier) ===
+ * A dynamic DID concatenates source slices: either (sourceDID, position, size)
+ * from a readable DID (sub 0x01), or (address, size) raw memory (sub 0x02).
+ * Periodic transmission (0x2A) addresses DIDs 0xF2xx by their low byte (PDID). */
+#define UDS_DYN_SRC_MEM          0xFFFFU  /* src_did marker: raw memory record */
+#define UDS_DYN_MAX_DATA         56U      /* assembled data cap: fits 0x22 resp + 0x2A SF */
+#define UDS_PERIODIC_SLOTS       4U
+
+typedef struct {
+    uint16_t src_did;    /* source DID, or UDS_DYN_SRC_MEM for raw memory */
+    uint32_t src_addr;   /* valid when src_did == UDS_DYN_SRC_MEM */
+    uint8_t  position;   /* 1-based first byte in source data record */
+    uint8_t  size;       /* bytes to take */
+} dyn_rec_t;
+
+typedef struct {
+    uint16_t  did;       /* 0xF200-0xF3FF, 0 = empty slot */
+    uint8_t   count;
+    dyn_rec_t rec[UDS_DYN_MAX_REC];
+} dyn_slot_t;
+
+static dyn_slot_t s_dyn[UDS_DYN_SLOTS];
+
+/* Periodic subscription (0x2A). ponytail: single-writer (rx task) u8 fields,
+ * main-task tick only reads -- divider is the validity flag, written last. */
+typedef struct {
+    uint8_t pdid;      /* low byte; DID = 0xF200|pdid */
+    uint8_t divider;   /* send period in 10ms ticks; 0 = inactive */
+    uint8_t counter;
+} periodic_sub_t;
+
+static periodic_sub_t s_periodic[UDS_PERIODIC_SLOTS];
+
+/** Resolve a readable source DID -> (data, len). Returns 0 if unknown. */
+static uint8_t resolve_source(uint16_t did, const uint8_t **data, uint16_t *len)
+{
+    if (did == UDS_DID_IO_CONTROL) {
+        *data = &s_io_port;
+        *len = 1U;
+        return 1U;
+    }
+    for (uint8_t i = 0U;
+         i < (uint8_t)(sizeof(k_did_read) / sizeof(k_did_read[0]));
+         i++) {
+        if (k_did_read[i].did == did) {
+            *data = (const uint8_t *)k_did_read[i].data;
+            *len = (uint16_t)strlen(k_did_read[i].data);
+            return 1U;
+        }
+    }
+    return 0U;
+}
+
+/** Find a dynamic DID slot (NULL = not defined). */
+static dyn_slot_t *dyn_find(uint16_t did)
+{
+    for (uint8_t i = 0U; i < UDS_DYN_SLOTS; i++) {
+        if (s_dyn[i].did == did) {
+            return &s_dyn[i];
+        }
+    }
+    return NULL;
+}
+
+/** Assemble dynamic DID data into out. Returns total bytes (0 = stale source). */
+static uint16_t dyn_assemble(const dyn_slot_t *s, uint8_t *out, uint16_t max)
+{
+    uint16_t pos = 0U;
+    for (uint8_t i = 0U; i < s->count; i++) {
+        const dyn_rec_t *r = &s->rec[i];
+        if ((uint16_t)(pos + r->size) > max) {
+            return 0U;
+        }
+        if (r->src_did == UDS_DYN_SRC_MEM) {
+            (void)memcpy(&out[pos], (const void *)(uintptr_t)r->src_addr, r->size);
+        } else {
+            const uint8_t *p;
+            uint16_t src_len;
+            if ((resolve_source(r->src_did, &p, &src_len) == 0U) ||
+                (r->position == 0U) ||
+                ((uint16_t)(r->position - 1U + r->size) > src_len)) {
+                return 0U;  /* source gone or slice out of range */
+            }
+            (void)memcpy(&out[pos], &p[r->position - 1U], r->size);
+        }
+        pos = (uint16_t)(pos + r->size);
+    }
+    return pos;
+}
+
 /* === Soft reset flag (checked in main.c) === */
 volatile uint8_t g_soft_reset_requested = 0U;
 
@@ -55,6 +150,10 @@ static void handle_read_data_by_id(const uint8_t *req, uint16_t req_len,
                                    uint8_t *resp, uint16_t *resp_len);
 static void handle_read_mem_by_addr(const uint8_t *req, uint16_t req_len,
                                     uint8_t *resp, uint16_t *resp_len);
+static void handle_read_data_periodic(const uint8_t *req, uint16_t req_len,
+                                      uint8_t *resp, uint16_t *resp_len);
+static void handle_dynamic_define_did(const uint8_t *req, uint16_t req_len,
+                                      uint8_t *resp, uint16_t *resp_len);
 static void handle_security_access(const uint8_t *req, uint16_t req_len,
                                    uint8_t *resp, uint16_t *resp_len);
 static void handle_routine_control(const uint8_t *req, uint16_t req_len,
@@ -201,6 +300,24 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
             }
             break;
 
+        case UDS_SID_READ_DATA_PERIODIC:
+            if (DiagSession_CheckAccess(sid) != 0) {
+                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
+                                       response, response_len);
+            } else {
+                handle_read_data_periodic(request, request_len, response, response_len);
+            }
+            break;
+
+        case UDS_SID_DYNAMIC_DEFINE_DID:
+            if (DiagSession_CheckAccess(sid) != 0) {
+                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
+                                       response, response_len);
+            } else {
+                handle_dynamic_define_did(request, request_len, response, response_len);
+            }
+            break;
+
         case UDS_SID_READ_DTC_INFORMATION:
             handle_read_dtc_information(request, request_len, response, response_len);
             break;
@@ -306,6 +423,8 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
             case UDS_SID_TESTER_PRESENT:
             case UDS_SID_READ_DTC_INFORMATION:
             case UDS_SID_CONTROL_DTC_SETTING:
+            case UDS_SID_READ_DATA_PERIODIC:
+            case UDS_SID_DYNAMIC_DEFINE_DID:
                 *response_len = 0U;
                 break;
             default:
@@ -458,6 +577,26 @@ static void handle_read_data_by_id(const uint8_t *req, uint16_t req_len,
         }
     }
     if (data_ptr == NULL) {
+        /* Dynamic DID lookup (0x2C defined) */
+        const dyn_slot_t *dyn = dyn_find(did);
+        if (dyn != NULL) {
+            uint8_t buf[UDS_DYN_MAX_DATA];
+            uint16_t n;
+            taskENTER_CRITICAL();  /* dyn table shared with main task tick */
+            n = dyn_assemble(dyn, buf, (uint16_t)sizeof(buf));
+            taskEXIT_CRITICAL();
+            if (n == 0U) {
+                build_negative_response(UDS_SID_READ_DATA_BY_ID, NRC_REQUEST_OUT_OF_RANGE,
+                                       resp, resp_len);
+                return;
+            }
+            resp[0] = UDS_SID_READ_DATA_BY_ID + UDS_RESPONSE_SID_OFFSET;  /* 0x62 */
+            resp[1] = (uint8_t)(did >> 8U);
+            resp[2] = (uint8_t)(did & 0xFFU);
+            (void)memcpy(&resp[3], buf, n);
+            *resp_len = (uint16_t)(3U + n);
+            return;
+        }
         build_negative_response(UDS_SID_READ_DATA_BY_ID, NRC_REQUEST_OUT_OF_RANGE,
                                resp, resp_len);
         return;
@@ -1200,7 +1339,6 @@ static void handle_read_dtc_information(const uint8_t *req, uint16_t req_len,
 }
 
 /* === 0x2F Virtual IO control state (simulator: flags instead of real actuators) === */
-static uint8_t s_io_port = 0U;
 
 /**
  * @brief  SID 0x2F: InputOutputControlByIdentifier
@@ -1458,6 +1596,344 @@ static void handle_read_mem_by_addr(const uint8_t *req, uint16_t req_len,
     *resp_len = (uint16_t)(1U + size);
     Debug_Print("[UDS] ReadMemByAddr: addr=0x%08lX size=%lu\r\n",
                 (unsigned long)addr, (unsigned long)size);
+}
+
+/**
+ * @brief  SID 0x2C: DynamicallyDefineDataIdentifier (ISO 14229-1:2013 10.4)
+ * @note   Sub-function 0x01 defineByIdentifier:
+ *           [0x2C 0x01 dynDID(2) {sourceDID(2) position(1) memorySize(1)}+]
+ *           position is 1-based; source must be a readable DID (registry or
+ *           IO 0x0200). Dynamic DIDs cannot nest other dynamic DIDs.
+ *         Sub-function 0x02 defineByMemoryAddress:
+ *           [0x2C 0x02 dynDID(2) ALFID {address memorySize}+]
+ *           Region validation identical to 0x23 (flash/SRAM only).
+ *         Sub-function 0x03 clearDynamicallyDefinedDataIdentifier:
+ *           [0x2C 0x03 dynDID(2)]
+ *         dynDID range 0xF200-0xF3FF; only 0xF2xx is addressable via 0x2A (PDID).
+ *         Response [0x6C sub dynDID(2)]. Assembled size cap UDS_DYN_MAX_DATA(56).
+ *         Redefining an existing dynDID replaces its records.
+ */
+static void handle_dynamic_define_did(const uint8_t *req, uint16_t req_len,
+                                      uint8_t *resp, uint16_t *resp_len)
+{
+    if (req_len < 4U) {
+        build_negative_response(UDS_SID_DYNAMIC_DEFINE_DID, NRC_INCORRECT_MSG_LEN,
+                               resp, resp_len);
+        return;
+    }
+    uint8_t sub = (uint8_t)(req[1] & 0x7FU);
+    uint16_t did = (uint16_t)(((uint16_t)req[2] << 8U) | (uint16_t)req[3]);
+
+    if ((did < UDS_DID_DYNAMIC_BASE) || (did > UDS_DID_DYNAMIC_END)) {
+        build_negative_response(UDS_SID_DYNAMIC_DEFINE_DID, NRC_REQUEST_OUT_OF_RANGE,
+                               resp, resp_len);
+        return;
+    }
+
+    dyn_slot_t tmp;                                  /* validate into scratch first */
+    (void)memset(&tmp, 0, sizeof(tmp));
+    tmp.did = did;
+
+    switch (sub) {
+        case 0x01U: {  /* defineByIdentifier: {sourceDID(2) position(1) size(1)}+ */
+            if ((req_len < 8U) || (((req_len - 4U) % 4U) != 0U)) {
+                build_negative_response(UDS_SID_DYNAMIC_DEFINE_DID, NRC_INCORRECT_MSG_LEN,
+                                       resp, resp_len);
+                return;
+            }
+            uint8_t n = (uint8_t)((req_len - 4U) / 4U);
+            uint16_t total = 0U;
+            if ((n == 0U) || (n > UDS_DYN_MAX_REC)) {
+                break;  /* -> 0x31 below */
+            }
+            for (uint8_t i = 0U; i < n; i++) {
+                const uint8_t *r = &req[4U + (uint16_t)i * 4U];
+                uint16_t src = (uint16_t)(((uint16_t)r[0] << 8U) | r[1]);
+                uint8_t  pos = r[2];
+                uint8_t  sz  = r[3];
+                const uint8_t *p;
+                uint16_t src_len;
+                if ((sz == 0U) ||
+                    (resolve_source(src, &p, &src_len) == 0U) ||
+                    (pos == 0U) ||
+                    ((uint16_t)(pos - 1U + sz) > src_len)) {
+                    break;  /* -> 0x31 */
+                }
+                tmp.rec[i].src_did = src;
+                tmp.rec[i].position = pos;
+                tmp.rec[i].size = sz;
+                total = (uint16_t)(total + sz);
+            }
+            if ((total == 0U) || (total > UDS_DYN_MAX_DATA) || (tmp.rec[n - 1U].size == 0U)) {
+                break;  /* incomplete validation loop -> 0x31 */
+            }
+            tmp.count = n;
+            break;
+        }
+        case 0x02U: {  /* defineByMemoryAddress: ALFID {addr size}+ */
+            if (req_len < 5U) {
+                build_negative_response(UDS_SID_DYNAMIC_DEFINE_DID, NRC_INCORRECT_MSG_LEN,
+                                       resp, resp_len);
+                return;
+            }
+            uint8_t alfid = req[4];
+            uint8_t alen = (uint8_t)(alfid & 0x0FU);
+            uint8_t slen = (uint8_t)((alfid >> 4U) & 0x0FU);
+            if (alen == 0U || slen == 0U || alen > 4U || slen > 4U) {
+                build_negative_response(UDS_SID_DYNAMIC_DEFINE_DID, NRC_REQUEST_OUT_OF_RANGE,
+                                       resp, resp_len);
+                return;
+            }
+            uint16_t stride = (uint16_t)(alen + slen);
+            if ((req_len < (uint16_t)(5U + stride)) ||
+                (((req_len - 5U) % stride) != 0U)) {
+                build_negative_response(UDS_SID_DYNAMIC_DEFINE_DID, NRC_INCORRECT_MSG_LEN,
+                                       resp, resp_len);
+                return;
+            }
+            uint8_t n = (uint8_t)((req_len - 5U) / stride);
+            uint16_t total = 0U;
+            if ((n == 0U) || (n > UDS_DYN_MAX_REC)) {
+                break;  /* -> 0x31 */
+            }
+            for (uint8_t i = 0U; i < n; i++) {
+                const uint8_t *r = &req[5U + (uint16_t)i * stride];
+                uint32_t addr = 0U, size = 0U;
+                for (uint8_t k = 0U; k < alen; k++) {
+                    addr = (addr << 8U) | r[k];
+                }
+                for (uint8_t k = 0U; k < slen; k++) {
+                    size = (size << 8U) | r[alen + k];
+                }
+                uint8_t in_flash = ((addr >= UDS_MEM_FLASH_BASE) &&
+                                    (addr < UDS_MEM_FLASH_END) &&
+                                    (size <= (UDS_MEM_FLASH_END - addr))) ? 1U : 0U;
+                uint8_t in_sram  = ((addr >= UDS_MEM_SRAM_BASE) &&
+                                    (addr < UDS_MEM_SRAM_END) &&
+                                    (size <= (UDS_MEM_SRAM_END - addr))) ? 1U : 0U;
+                if ((size == 0U) || (size > UDS_DYN_MAX_DATA) ||
+                    (in_flash == 0U && in_sram == 0U)) {
+                    break;  /* -> 0x31 */
+                }
+                tmp.rec[i].src_did = UDS_DYN_SRC_MEM;
+                tmp.rec[i].src_addr = addr;
+                tmp.rec[i].size = (uint8_t)size;
+                total = (uint16_t)(total + size);
+            }
+            if ((total == 0U) || (total > UDS_DYN_MAX_DATA) || (tmp.rec[n - 1U].size == 0U)) {
+                break;  /* incomplete validation loop -> 0x31 */
+            }
+            tmp.count = n;
+            break;
+        }
+        case 0x03U: {  /* clearDynamicallyDefinedDataIdentifier */
+            dyn_slot_t *slot = dyn_find(did);
+            if (slot == NULL) {
+                build_negative_response(UDS_SID_DYNAMIC_DEFINE_DID, NRC_REQUEST_OUT_OF_RANGE,
+                                       resp, resp_len);
+                return;
+            }
+            taskENTER_CRITICAL();
+            slot->did = 0U;
+            slot->count = 0U;
+            taskEXIT_CRITICAL();
+            /* Active 0x2A subs on this DID stop themselves on next assemble failure */
+            resp[0] = UDS_SID_DYNAMIC_DEFINE_DID + UDS_RESPONSE_SID_OFFSET;  /* 0x6C */
+            resp[1] = sub;
+            resp[2] = (uint8_t)(did >> 8U);
+            resp[3] = (uint8_t)(did & 0xFFU);
+            *resp_len = 4U;
+            Debug_Print("[UDS] DynDID clear 0x%04X\r\n", did);
+            return;
+        }
+        default:
+            build_negative_response(UDS_SID_DYNAMIC_DEFINE_DID, NRC_SUB_FUNC_NOT_SUPPORTED,
+                                   resp, resp_len);
+            return;
+    }
+
+    /* 0x01/0x02 common path: commit scratch slot (validation done above) */
+    if (tmp.count == 0U) {
+        build_negative_response(UDS_SID_DYNAMIC_DEFINE_DID, NRC_REQUEST_OUT_OF_RANGE,
+                               resp, resp_len);
+        return;
+    }
+    dyn_slot_t *slot = dyn_find(did);
+    if (slot == NULL) {
+        for (uint8_t i = 0U; i < UDS_DYN_SLOTS; i++) {
+            if (s_dyn[i].did == 0U) {
+                slot = &s_dyn[i];
+                break;
+            }
+        }
+    }
+    if (slot == NULL) {
+        build_negative_response(UDS_SID_DYNAMIC_DEFINE_DID, NRC_REQUEST_OUT_OF_RANGE,
+                               resp, resp_len);  /* table full */
+        return;
+    }
+    taskENTER_CRITICAL();
+    *slot = tmp;
+    taskEXIT_CRITICAL();
+
+    resp[0] = UDS_SID_DYNAMIC_DEFINE_DID + UDS_RESPONSE_SID_OFFSET;  /* 0x6C */
+    resp[1] = sub;
+    resp[2] = (uint8_t)(did >> 8U);
+    resp[3] = (uint8_t)(did & 0xFFU);
+    *resp_len = 4U;
+    Debug_Print("[UDS] DynDID define 0x%04X (%u rec)\r\n", did, tmp.count);
+}
+
+/* Periodic rates as 10ms-tick dividers (0x2A transmissionMode) */
+#define UDS_PERIODIC_SLOW_DIV     100U  /* 1000ms */
+#define UDS_PERIODIC_MEDIUM_DIV   10U   /*  100ms */
+#define UDS_PERIODIC_FAST_DIV     2U    /*   20ms */
+
+/**
+ * @brief  SID 0x2A: ReadDataByPeriodicIdentifier (ISO 14229-1:2013 10.3)
+ * @note   Request [0x2A transmissionMode pdid(1B)+] -- pdid is the low byte of
+ *         a 0x2C-defined DID 0xF2xx (0xF2 implied).
+ *         transmissionMode 0x01 slow(1s) / 0x02 medium(100ms) / 0x03 fast(20ms)
+ *         / 0x04 stopSending (no pdid = stop all).
+ *         Initial response [0x6A transmissionMode]. Periodic frames use the
+ *         ISO format [pdid(1B) + data] WITHOUT RSID (py-uds adds 0x6A in an
+ *         extended format -- not used here, ISO-conformant only).
+ *         Periodic transmission stops on Default session entry / ECU reset.
+ */
+static void handle_read_data_periodic(const uint8_t *req, uint16_t req_len,
+                                      uint8_t *resp, uint16_t *resp_len)
+{
+    if (req_len < 2U) {
+        build_negative_response(UDS_SID_READ_DATA_PERIODIC, NRC_INCORRECT_MSG_LEN,
+                               resp, resp_len);
+        return;
+    }
+    uint8_t mode = (uint8_t)(req[1] & 0x7FU);
+
+    if (mode == 0x04U) {  /* stopSending */
+        if (req_len == 2U) {
+            UDS_PeriodicStopAll();
+        } else {
+            for (uint16_t i = 2U; i < req_len; i++) {
+                uint8_t found = 0U;
+                taskENTER_CRITICAL();
+                for (uint8_t s = 0U; s < UDS_PERIODIC_SLOTS; s++) {
+                    if ((s_periodic[s].divider != 0U) &&
+                        (s_periodic[s].pdid == req[i])) {
+                        s_periodic[s].divider = 0U;
+                        found = 1U;
+                    }
+                }
+                taskEXIT_CRITICAL();
+                if (found == 0U) {
+                    build_negative_response(UDS_SID_READ_DATA_PERIODIC,
+                                            NRC_REQUEST_OUT_OF_RANGE, resp, resp_len);
+                    return;
+                }
+            }
+        }
+        resp[0] = UDS_SID_READ_DATA_PERIODIC + UDS_RESPONSE_SID_OFFSET;  /* 0x6A */
+        resp[1] = mode;
+        *resp_len = 2U;
+        Debug_Print("[UDS] Periodic stop\r\n");
+        return;
+    }
+
+    uint16_t div;
+    switch (mode) {
+        case 0x01U: div = UDS_PERIODIC_SLOW_DIV;   break;
+        case 0x02U: div = UDS_PERIODIC_MEDIUM_DIV; break;
+        case 0x03U: div = UDS_PERIODIC_FAST_DIV;   break;
+        default:
+            build_negative_response(UDS_SID_READ_DATA_PERIODIC, NRC_SUB_FUNC_NOT_SUPPORTED,
+                                   resp, resp_len);
+            return;
+    }
+    if (req_len < 3U) {
+        build_negative_response(UDS_SID_READ_DATA_PERIODIC, NRC_INCORRECT_MSG_LEN,
+                               resp, resp_len);
+        return;
+    }
+
+    for (uint16_t i = 2U; i < req_len; i++) {
+        uint8_t pdid = req[i];
+        if (dyn_find((uint16_t)(UDS_DID_DYNAMIC_BASE | pdid)) == NULL) {
+            build_negative_response(UDS_SID_READ_DATA_PERIODIC, NRC_REQUEST_OUT_OF_RANGE,
+                                   resp, resp_len);  /* not 0x2C-defined */
+            return;
+        }
+        periodic_sub_t *slot = NULL;
+        for (uint8_t s = 0U; s < UDS_PERIODIC_SLOTS; s++) {
+            if ((s_periodic[s].divider != 0U) && (s_periodic[s].pdid == pdid)) {
+                slot = &s_periodic[s];
+                break;
+            }
+        }
+        if (slot == NULL) {
+            for (uint8_t s = 0U; s < UDS_PERIODIC_SLOTS; s++) {
+                if (s_periodic[s].divider == 0U) {
+                    slot = &s_periodic[s];
+                    break;
+                }
+            }
+        }
+        if (slot == NULL) {
+            build_negative_response(UDS_SID_READ_DATA_PERIODIC, NRC_REQUEST_OUT_OF_RANGE,
+                                   resp, resp_len);  /* subscription table full */
+            return;
+        }
+        taskENTER_CRITICAL();
+        slot->pdid = pdid;
+        slot->counter = 0U;
+        slot->divider = (uint8_t)div;  /* validity flag written last */
+        taskEXIT_CRITICAL();
+    }
+
+    resp[0] = UDS_SID_READ_DATA_PERIODIC + UDS_RESPONSE_SID_OFFSET;  /* 0x6A */
+    resp[1] = mode;
+    *resp_len = 2U;
+    Debug_Print("[UDS] Periodic mode=%u (%u DID)\r\n", mode, (unsigned)(req_len - 2U));
+}
+
+void UDS_PeriodicStopAll(void)
+{
+    taskENTER_CRITICAL();
+    for (uint8_t s = 0U; s < UDS_PERIODIC_SLOTS; s++) {
+        s_periodic[s].divider = 0U;
+    }
+    taskEXIT_CRITICAL();
+}
+
+void UDS_PeriodicTick(void)
+{
+    static uint8_t frame[1U + UDS_DYN_MAX_DATA];  /* main task only -- no reentry */
+
+    for (uint8_t s = 0U; s < UDS_PERIODIC_SLOTS; s++) {
+        if (s_periodic[s].divider == 0U) {
+            continue;
+        }
+        if (++s_periodic[s].counter < s_periodic[s].divider) {
+            continue;
+        }
+        s_periodic[s].counter = 0U;
+
+        const dyn_slot_t *dyn = dyn_find((uint16_t)(UDS_DID_DYNAMIC_BASE | s_periodic[s].pdid));
+        uint16_t n = 0U;
+        if (dyn != NULL) {
+            taskENTER_CRITICAL();
+            n = dyn_assemble(dyn, &frame[1], UDS_DYN_MAX_DATA);
+            taskEXIT_CRITICAL();
+        }
+        if (n == 0U) {
+            /* Source DID no longer assemblable (0x2C clear/redefine) -> auto stop */
+            taskENTER_CRITICAL();
+            s_periodic[s].divider = 0U;
+            taskEXIT_CRITICAL();
+            continue;
+        }
+        frame[0] = s_periodic[s].pdid;  /* ISO periodic format: no RSID */
+        ISO_TP_SendResponse(CAN_ID_PHYSICAL_RESP, frame, (uint16_t)(1U + n));
+    }
 }
 
 /**

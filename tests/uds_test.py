@@ -991,6 +991,197 @@ def test_read_mem_by_addr(tester: UDSTester, report: TestReport):
     tester.send_uds([0x02, 0x10, 0x01])
 
 
+def test_dynamic_define_did(tester: UDSTester, report: TestReport):
+    """SID 0x2C: DynamicallyDefineDataIdentifier (+ 0x22 dynamic DID read)"""
+    print(Color.header("SID 0x2C: DynamicallyDefineDataIdentifier"))
+
+    tester.send_uds([0x02, 0x10, 0x01])
+    time.sleep(0.05)
+    run_check(tester, report, "From Default session (NRC 0x33)",
+              [0x2C, 0x01, 0xF2, 0x00, 0xF1, 0x90, 0x01, 0x04], expect_nrc=0x33)
+
+    tester.send_uds([0x02, 0x10, 0x03])
+    time.sleep(0.05)
+
+    # 0x23 cross-check below needs security unlock (extended+locked -> NRC 0x33)
+    tester_unlock_security(tester)
+
+    # Reference: full VIN via 0x22 (for slice comparison)
+    vin = None
+    resp = tester.send_uds([0x03, 0x22, 0xF1, 0x90])
+    if resp:
+        pos = tester.parse_positive(resp, 0x22)
+        if pos and len(pos['payload']) >= 6:
+            vin = bytes(pos['payload'][2:])
+
+    # 1) defineByIdentifier: 0xF200 = VIN[0:4]
+    run_check(tester, report, "Define 0xF200 = VIN[0:4] (by DID)",
+              [0x2C, 0x01, 0xF2, 0x00, 0xF1, 0x90, 0x01, 0x04], expect_sid=0x2C)
+
+    # 2) 0x22 read of dynamic DID -> assembled slice
+    result = TestResult("0x22 read 0xF200 = VIN slice")
+    resp = tester.send_uds([0x03, 0x22, 0xF2, 0x00])
+    pos = tester.parse_positive(resp, 0x22) if resp else None
+    if pos and len(pos['payload']) >= 6 and vin:
+        got = bytes(pos['payload'][2:])
+        if got == vin[:4]:
+            result.status = TestStatus.PASS
+            result.detail = f"data={got.decode(errors='replace')}"
+        else:
+            result.status = TestStatus.FAIL
+            result.detail = f"got={got.hex()} want={vin[:4].hex()}"
+        result.raw_rx = resp.hex().upper()
+    else:
+        result.status = TestStatus.FAIL
+        result.detail = "No/partial response"
+    result.raw_tx = "03 22 F2 00"
+    print(f"  {result.status.value}: {result.detail}")
+    report.add(result)
+
+    # 3) defineByMemoryAddress: 0xF201 = flash[0x08000000..+4] (vector table MSP)
+    run_check(tester, report, "Define 0xF201 = flash@0x08000000 (by address)",
+              [0x2C, 0x02, 0xF2, 0x01, 0x24, 0x08, 0x00, 0x00, 0x00, 0x00, 0x04],
+              expect_sid=0x2C)
+    # cross-check against 0x23 direct read (full frame: PCI + SID + params)
+    r_2c = tester.send_uds([0x03, 0x22, 0xF2, 0x01])
+    r_23 = tester.send_uds([0x08, 0x23, 0x24, 0x08, 0x00, 0x00, 0x00, 0x00, 0x04])
+    p_2c = tester.parse_positive(r_2c, 0x22) if r_2c else None
+    p_23 = tester.parse_positive(r_23, 0x23) if r_23 else None
+    result = TestResult("0x22 read 0xF201 == 0x23 flash read")
+    if p_2c and p_23 and bytes(p_2c['payload'][2:]) == bytes(p_23['payload']):
+        result.status = TestStatus.PASS
+        result.detail = f"MSP bytes {bytes(p_23['payload']).hex()}"
+    else:
+        result.status = TestStatus.FAIL
+        result.detail = "mismatch or no response"
+    result.raw_tx = "03 22 F2 01 / 23 24 .."
+    print(f"  {result.status.value}: {result.detail}")
+    report.add(result)
+
+    # 4) error paths
+    run_check(tester, report, "Unknown source DID (NRC 0x31)",
+              [0x2C, 0x01, 0xF2, 0x02, 0x99, 0x99, 0x01, 0x01], expect_nrc=0x31)
+    run_check(tester, report, "Position out of range (NRC 0x31)",
+              [0x2C, 0x01, 0xF2, 0x03, 0xF1, 0x90, 0x14, 0x04], expect_nrc=0x31)
+    run_check(tester, report, "dynDID out of 0xF200-0xF3FF (NRC 0x31)",
+              [0x2C, 0x01, 0xF4, 0x00, 0xF1, 0x90, 0x01, 0x04], expect_nrc=0x31)
+    run_check(tester, report, "Bad memory region (NRC 0x31)",
+              [0x2C, 0x02, 0xF2, 0x04, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04],
+              expect_nrc=0x31)
+
+    # 5) clear + read after clear
+    run_check(tester, report, "Clear 0xF200", [0x2C, 0x03, 0xF2, 0x00], expect_sid=0x2C)
+    run_check(tester, report, "0x22 read after clear (NRC 0x31)",
+              [0x22, 0xF2, 0x00], expect_nrc=0x31)
+
+    tester.send_uds([0x02, 0x10, 0x01])
+
+
+def test_periodic_read(tester: UDSTester, report: TestReport):
+    """SID 0x2A: ReadDataByPeriodicIdentifier (fast/medium rate, stop)"""
+    print(Color.header("SID 0x2A: ReadDataByPeriodicIdentifier"))
+
+    tester.send_uds([0x02, 0x10, 0x01])
+    time.sleep(0.05)
+    run_check(tester, report, "From Default session (NRC 0x33)",
+              [0x2A, 0x03, 0x00], expect_nrc=0x33)
+
+    tester.send_uds([0x02, 0x10, 0x03])
+    time.sleep(0.05)
+    # Define 0xF200 = VIN[0:4] (subscription source)
+    tester.send_uds([0x08, 0x2C, 0x01, 0xF2, 0x00, 0xF1, 0x90, 0x01, 0x04])
+    time.sleep(0.05)
+
+    # 1) Subscribe fast rate (20ms) -> initial [0x6A 03]
+    run_check(tester, report, "Subscribe fast (0x2A 0x03)", [0x2A, 0x03, 0x00],
+              expect_sid=0x2A)
+
+    # 2) Collect periodic frames for 250ms (expect ~12 at 20ms)
+    frames = []
+    deadline = time.time() + 0.25
+    while time.time() < deadline:
+        msg = tester.bus.recv(timeout=0.05)
+        if msg is None:
+            continue
+        if msg.arbitration_id != tester.RESPONSE_ID:
+            continue
+        d = bytes(msg.data)
+        if len(d) >= 6 and d[0] == 0x05 and d[1] == 0x00:  # SF, pdid=0x00
+            frames.append(d)
+    result = TestResult("Fast rate frames in 250ms (>=5)")
+    if len(frames) >= 5:
+        # content check: [05, pdid, VIN[0:4]]
+        vin_slice = frames[0][2:6]
+        ok = all(f[2:6] == vin_slice for f in frames)
+        if ok:
+            result.status = TestStatus.PASS
+            result.detail = f"{len(frames)} frames, data={vin_slice.hex()}"
+        else:
+            result.status = TestStatus.FAIL
+            result.detail = "inconsistent data"
+    else:
+        result.status = TestStatus.FAIL
+        result.detail = f"only {len(frames)} frames"
+    result.raw_tx = "2A 03 00 (active)"
+    print(f"  {result.status.value}: {result.detail}")
+    report.add(result)
+
+    # 3) Stop -> silence
+    run_check(tester, report, "Stop sending (0x2A 0x04)", [0x2A, 0x04, 0x00],
+              expect_sid=0x2A)
+    silent = True
+    deadline = time.time() + 0.2
+    while time.time() < deadline:
+        msg = tester.bus.recv(timeout=0.05)
+        if msg is None:
+            continue
+        if msg.arbitration_id == tester.RESPONSE_ID:
+            d = bytes(msg.data)
+            if len(d) >= 2 and d[0] == 0x05:  # any periodic-format frame
+                silent = False
+                break
+    report.add(TestResult("Silence after stop (200ms)",
+                          TestStatus.PASS if silent else TestStatus.FAIL,
+                          "no periodic frames" if silent else "frames still arriving"))
+    print(f"  {'PASS' if silent else 'FAIL'}: silence after stop")
+
+    # 4) Medium rate (100ms): ~3 frames in 350ms
+    tester.send_uds([0x03, 0x2A, 0x02, 0x00])
+    time.sleep(0.05)
+    n_med = 0
+    deadline = time.time() + 0.35
+    while time.time() < deadline:
+        msg = tester.bus.recv(timeout=0.05)
+        if msg is None or msg.arbitration_id != tester.RESPONSE_ID:
+            continue
+        d = bytes(msg.data)
+        if len(d) >= 6 and d[0] == 0x05 and d[1] == 0x00:
+            n_med += 1
+    ok_med = 2 <= n_med <= 6
+    report.add(TestResult("Medium rate ~3 frames/350ms",
+                          TestStatus.PASS if ok_med else TestStatus.FAIL,
+                          f"{n_med} frames"))
+    print(f"  {'PASS' if ok_med else 'FAIL'}: medium rate ({n_med} frames)")
+
+    # 5) Default session entry stops all periodic (auto-cleanup path)
+    tester.send_uds([0x02, 0x10, 0x01])
+    time.sleep(0.05)
+    silent2 = True
+    deadline = time.time() + 0.25
+    while time.time() < deadline:
+        msg = tester.bus.recv(timeout=0.05)
+        if msg is None or msg.arbitration_id != tester.RESPONSE_ID:
+            continue
+        d = bytes(msg.data)
+        if len(d) >= 2 and d[0] == 0x05:
+            silent2 = False
+            break
+    report.add(TestResult("Default session stops periodic",
+                          TestStatus.PASS if silent2 else TestStatus.FAIL,
+                          "stopped" if silent2 else "still sending"))
+    print(f"  {'PASS' if silent2 else 'FAIL'}: default session cleanup")
+
+
 #=======================================
 # vcan setup helper
 #=======================================
@@ -1055,6 +1246,8 @@ def main():
         test_clear_dtc(tester, report)
         test_control_dtc_setting(tester, report)
         test_read_mem_by_addr(tester, report)
+        test_dynamic_define_did(tester, report)
+        test_periodic_read(tester, report)
 
         tester.disconnect()
 

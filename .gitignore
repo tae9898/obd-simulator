@@ -44,3 +44,6 @@ Thumbs.db
 # Python cache
 __pycache__/
 *.pyc
+
+# Editor/LSP artifacts (regenerate with: bear -- make)
+compile_commands.json
