@@ -222,6 +222,10 @@ $(BUILD_DIR):
 # ============================================
 -include $(DEPS)
 
+# CFLAGS/defines live in this Makefile -- force rebuild when it changes
+# (plain timestamp deps miss flag-only edits, e.g. -DVTOR_FLASH_BASE)
+$(OBJECTS): Makefile
+
 # ============================================
 # clean target
 # ============================================
@@ -268,13 +272,19 @@ disasm: $(BUILD_DIR)/$(TARGET).elf
 BL_C_SOURCES = \
 Core/Src/bl_main.c \
 Core/Src/bl_boot.c \
+Core/Src/bl_uds.c \
+Core/Src/iso_tp.c \
+Core/Src/diag_session.c \
+Core/Src/ota_flash.c \
 Core/Src/fdcan_config.c \
 Core/Src/uart_debug.c \
 Core/Src/stm32g4xx_hal_msp.c \
 Core/Src/stm32g4xx_it.c \
 Core/Src/system_stm32g4xx.c
 
-BL_CFLAGS = $(MCU) $(C_DEFS) -DBL_BUILD $(C_INCLUDES) -Os -g -Wall -fdata-sections -ffunction-sections -fno-common
+# bl_compat first on the include path: stubs task.h for iso_tp.c (bare-metal
+# critical sections) before the real FreeRTOS headers in C_INCLUDES
+BL_CFLAGS = $(MCU) $(C_DEFS) -DBL_BUILD -ICore/Inc/bl_compat $(C_INCLUDES) -Os -g -Wall -fdata-sections -ffunction-sections -fno-common
 
 BL_LDFLAGS = $(MCU) -specs=nano.specs -T STM32G431RBTX_BL.ld \
 -Wl,-Map=$(BUILD_DIR)/bl/$(BL_TARGET).map,--cref -Wl,--gc-sections
@@ -309,5 +319,7 @@ $(BUILD_DIR)/bl/Drivers/STM32G4xx_HAL_Driver/Src/%.o: Drivers/STM32G4xx_HAL_Driv
 $(BUILD_DIR)/bl/startup_stm32g431xx.o: startup_stm32g431xx.s | $(BUILD_DIR)
 	@echo 'Assembling (BL): $<'
 	$(AS) -c $(ASFLAGS) -o $@ $<
+
+$(BL_OBJECTS): Makefile
 
 -include $(BL_OBJECTS:.o=.d)

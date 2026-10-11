@@ -14,6 +14,8 @@
 #include "bl_handoff.h"
 #include "uart_debug.h"
 #include "fdcan_config.h"
+#include "iso_tp.h"
+#include "diag_session.h"
 
 /* Handles owned here (app owns them in main.c) */
 FDCAN_HandleTypeDef hfdcan1;   /* BL_BUILD: defined here, zero-init = .Instance NULL */
@@ -31,6 +33,13 @@ uint32_t bl_meta_rollback_counter(void);
 int bl_app_vectors_ok(void);
 void bl_jump_to_app(void);
 
+/* bl_uds.c */
+extern volatile uint8_t bl_reset_pending;
+
+/* diag_session.c links these (Default-session restore); no OBD machinery in BL */
+void OBD2_DtcSettingControl(uint8_t on) { (void)on; }
+void UDS_PeriodicStopAll(void) { }
+
 int main(void)
 {
     HAL_Init();
@@ -40,15 +49,17 @@ int main(void)
     if (UART_DebugInit(&huart2) != HAL_OK) {
         while (1) { /* no debug link */ }
     }
-    Debug_Print("\r\n[FBL] Bootloader v0.1 (BL 0x08000000, app 0x08007000, meta 0x0801E000)\r\n");
+    Debug_Print("\r\n[FBL] Bootloader v0.2 (BL 0x08000000, app 0x08007000, meta 0x0801E000)\r\n");
 
     /* --- Boot gate --- */
     volatile bl_handoff_t *ho = (volatile bl_handoff_t *)BL_HANDOFF_ADDR;
+    int enter_via_flag = 0;
 
     if (ho->magic == BL_HANDOFF_MAGIC && ho->reason == BL_REASON_UPDATE) {
         ho->magic  = 0U;   /* consume: one-shot */
         ho->reason = 0U;
-        Debug_Print("[FBL] Stay-in-BL flag consumed -> waiting for UDS\r\n");
+        enter_via_flag = 1;
+        Debug_Print("[FBL] Stay-in-BL flag consumed -> UDS flash server\r\n");
     } else if (bl_meta_absent()) {
         if (!bl_app_vectors_ok()) {
             Debug_Print("[FBL] No valid app image -> waiting for UDS\r\n");
@@ -67,10 +78,61 @@ int main(void)
                     (unsigned long)m->magic, (unsigned long)m->state);
     }
 
-    /* --- Stay in BL (M1: LED blink; M2 adds the UDS programming server) --- */
+    /* --- UDS flash server bring-up (same FDCAN/ISO-TP stack as the app) --- */
+    DiagSession_Init();
+    ISO_TP_Init();
+
+    if (FDCAN1_InitFD(&hfdcan1) != HAL_OK ||
+        FDCAN1_ConfigureFilters(&hfdcan1) != HAL_OK ||
+        FDCAN1_StartNotification(&hfdcan1) != HAL_OK) {
+        Debug_Print("[FBL] FDCAN init failed\r\n");
+        while (1) { LED_TOGGLE(); HAL_Delay(50); }
+    }
+    HAL_FDCAN_ConfigGlobalFilter(&hfdcan1,
+        FDCAN_ACCEPT_IN_RX_FIFO0, FDCAN_REJECT,
+        FDCAN_FILTER_REMOTE, FDCAN_REJECT_REMOTE);
+    if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK) {
+        while (1) { LED_TOGGLE(); HAL_Delay(50); }
+    }
+    DiagSession_MarkBootReady();
+
+    if (enter_via_flag) {
+        /* Tester asked for programming: start there. S3 (5s without 0x3E)
+         * drops to Default -> the auto-boot rule below reboots the app. */
+        (void)DiagSession_SetSession(DIAG_SESSION_PROGRAMMING);
+    }
+    Debug_Print("[FBL] Server ready (0x10 02/27/28/31/34/36/37/3E/85)\r\n");
+
+    uint32_t reset_at = 0U;
     while (1) {
+        /* RX: drain the ISR ring -> ISO-TP reassembly (dispatch runs inline) */
+        CAN_RxMessage_t frame;
+        while (FDCAN_BL_Pop(&frame) != 0) {
+            ISO_TP_ProcessFrame(frame.can_id, frame.data, frame.dlc);
+        }
+
+        ISO_TP_Tick(HAL_GetTick());
+        DiagSession_Tick(HAL_GetTick());
+
+        /* 0x11: reset after the response drained (ISO-TP TX is paced) */
+        if (bl_reset_pending != 0U) {
+            uint32_t now = HAL_GetTick();
+            if (reset_at == 0U) {
+                reset_at = now + 200U;
+            } else if ((int32_t)(now - reset_at) >= 0) {
+                NVIC_SystemReset();
+            }
+        }
+
+        /* Self-heal: tester gone (S3 -> Default) with a valid app -> boot it.
+         * CRC (~20ms @170MHz) only runs while idle in Default session. */
+        if (DiagSession_Get() == DIAG_SESSION_DEFAULT && bl_app_crc_ok()) {
+            Debug_Print("[FBL] Default session + valid app -> jump\r\n");
+            bl_jump_to_app();
+        }
+
         LED_TOGGLE();
-        HAL_Delay(100);   /* fast blink = BL waiting */
+        HAL_Delay(10);
     }
 }
 

@@ -113,6 +113,12 @@ DiagSecGate_t DiagSession_CheckSecurityGate(void);
 void DiagSession_ResetS3Timeout(void);
 void DiagSession_Tick(uint32_t now_ms);
 
+/** Current session type (DIAG_SESSION_*) -- read-only probe for the bootloader */
+uint8_t DiagSession_Get(void);
+
+/** 1 = security unlocked (any level), 0 = locked */
+int DiagSession_SecurityUnlocked(void);
+
 /**
  * @brief  Service access permission check
  * @retval 0: allowed, -1: denied

@@ -6,6 +6,8 @@
 
 #include "main.h"
 #include "bl_handoff.h"
+#include "ota_flash.h"
+#include <string.h>
 
 /* ponytail: CRC32-only integrity; add signature verify (ECDSA/HSM, AIS-189)
  * before real-vehicle use. */
@@ -68,6 +70,18 @@ uint32_t bl_meta_rollback_counter(void)
     return 0U;
 }
 
+/** Rewrite the meta page (erase + program). 0 = ok. */
+int bl_meta_write(const bl_meta_t *m)
+{
+    uint8_t buf[sizeof(bl_meta_t) + 4U];   /* pad to doubleword multiple (20 -> 24) */
+    (void)memset(buf, 0xFF, sizeof(buf));
+    (void)memcpy(buf, m, sizeof(*m));
+    if (ota_flash_erase(META_BASE, 2048U) != 0) {
+        return -1;
+    }
+    return ota_flash_write(META_BASE, buf, sizeof(buf));
+}
+
 /* === App vector sanity + jump === */
 
 /** Plausible app at APP_BASE? (initial SP inside RAM, reset vector inside slot)
@@ -112,5 +126,13 @@ void bl_jump_to_app(void)
     __ISB();
     __set_MSP(sp);
     __set_CONTROL(0U);   /* privileged, MSP */
+
+    /* Re-enable interrupts: __disable_irq() above masked everything, and the
+     * app inherits PRIMASK -- a cold-reset app boots with IRQs on and never
+     * enables them itself, so a masked handoff leaves SysTick dead (frozen
+     * HAL tick) and FreeRTOS' first svc would fault. No pending IRQs exist
+     * here (ICPR cleared above), the window is safe. */
+    __enable_irq();
+
     reset();             /* no return */
 }

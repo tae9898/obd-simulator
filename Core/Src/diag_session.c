@@ -167,6 +167,16 @@ void DiagSession_ResetS3Timeout(void)
     s_session.last_activity_tick = HAL_GetTick();
 }
 
+uint8_t DiagSession_Get(void)
+{
+    return s_session.session_type;
+}
+
+int DiagSession_SecurityUnlocked(void)
+{
+    return (s_session.security_level != DIAG_SEC_LOCKED) ? 1 : 0;
+}
+
 /**
  * @brief  S3 timeout handling
  * @note   If no activity for 5 seconds, returns to Default session.
@@ -212,9 +222,8 @@ static const svc_access_t k_access_rules[] = {
     { UDS_SID_DYNAMIC_DEFINE_DID,    1U, 0U },  /* 0x2C: Extended only */
     { UDS_SID_COMMUNICATION_CONTROL, 1U, 0U },  /* 0x28: Extended only */
     { UDS_SID_CONTROL_DTC_SETTING,   1U, 0U },  /* 0x85: Extended only */
-    { UDS_SID_REQUEST_DOWNLOAD,      1U, 1U },  /* 0x34: OTA */
-    { UDS_SID_TRANSFER_DATA,         1U, 1U },  /* 0x36: OTA */
-    { UDS_SID_REQUEST_TRANSFER_EXIT, 1U, 1U },  /* 0x37: OTA */
+    /* 0x34/0x36/0x37 moved to the bootloader's programming-session server
+     * (bl_uds.c gates inline) -- app no longer self-flashes. */
 };
 
 int DiagSession_CheckAccess(uint8_t sid)

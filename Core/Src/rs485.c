@@ -84,7 +84,10 @@ HAL_StatusTypeDef RS485_SendData(const uint8_t *data, uint16_t len)
     HAL_StatusTypeDef status;
 
     RS485_DE_HIGH();
-    status = HAL_UART_Transmit(&huart1, data, len, HAL_MAX_DELAY);
+    /* Finite timeout: with HAL_MAX_DELAY a wedged UART (RS485 line noise,
+     * error mid-TX corrupting the HAL state machine) blocked vCanRxTask
+     * forever -> IWDG reset loop. Drop the frame instead of dying. */
+    status = HAL_UART_Transmit(&huart1, data, len, 20U);
     RS485_DE_LOW();
 
     return status;

@@ -18,7 +18,8 @@
 #include "obd2_simulator.h"
 #include "uart_debug.h"
 #include "vehicle_config.h"
-#include "ota_flash.h"   /* OTA flash erase/write (0x34/0x36/0x37) */
+#include "ota_flash.h"   /* OTA_FLASH_END constant (0x23 read range) */
+#include "bl_handoff.h"  /* noinit flag: 0x10 02 -> bootloader handoff */
 #include "iso_tp.h"      /* ISO_TP_SendResponse (0x2A periodic frames) */
 #include "can_addressing.h" /* CAN_ID_PHYSICAL_RESP */
 #include <string.h>
@@ -170,12 +171,6 @@ static void handle_read_dtc_information(const uint8_t *req, uint16_t req_len,
                                         uint8_t *resp, uint16_t *resp_len);
 static void handle_input_output_control(const uint8_t *req, uint16_t req_len,
                                         uint8_t *resp, uint16_t *resp_len);
-static void handle_request_download(const uint8_t *req, uint16_t req_len,
-                                    uint8_t *resp, uint16_t *resp_len);
-static void handle_transfer_data(const uint8_t *req, uint16_t req_len,
-                                 uint8_t *resp, uint16_t *resp_len);
-static void handle_request_transfer_exit(const uint8_t *req, uint16_t req_len,
-                                         uint8_t *resp, uint16_t *resp_len);
 static void handle_obd2_service01(const uint8_t *req, uint16_t req_len,
                                   uint8_t *resp, uint16_t *resp_len);
 static void handle_obd2_service03(const uint8_t *req, uint16_t req_len,
@@ -299,7 +294,6 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
                 handle_read_mem_by_addr(request, request_len, response, response_len);
             }
             break;
-
         case UDS_SID_READ_DATA_PERIODIC:
             if (DiagSession_CheckAccess(sid) != 0) {
                 build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
@@ -375,32 +369,10 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
             }
             break;
 
-        case UDS_SID_REQUEST_DOWNLOAD:
-            if (DiagSession_CheckAccess(sid) != 0) {
-                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
-                                       response, response_len);
-            } else {
-                handle_request_download(request, request_len, response, response_len);
-            }
-            break;
-
-        case UDS_SID_TRANSFER_DATA:
-            if (DiagSession_CheckAccess(sid) != 0) {
-                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
-                                       response, response_len);
-            } else {
-                handle_transfer_data(request, request_len, response, response_len);
-            }
-            break;
-
-        case UDS_SID_REQUEST_TRANSFER_EXIT:
-            if (DiagSession_CheckAccess(sid) != 0) {
-                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
-                                       response, response_len);
-            } else {
-                handle_request_transfer_exit(request, request_len, response, response_len);
-            }
-            break;
+        /* 0x34/0x36/0x37 (RequestDownload/TransferData/RequestTransferExit):
+         * moved to the bootloader's flash server -- the app no longer self-flashes.
+         * Requests fall through to default (NRC 0x11). Flash update path:
+         * 0x10 02 here -> handoff flag + reset -> BL programming-session server. */
 
         default:
             Debug_Print("[UDS] Unsupported SID: 0x%02X\r\n", sid);
@@ -481,6 +453,19 @@ static void handle_session_control(const uint8_t *req, uint16_t req_len,
 
     Debug_Print("[UDS] Session -> 0x%02X (P2=%ums P2*=%ums)\r\n",
                 sub, UDS_P2_SERVER_MAX_MS, UDS_P2_STAR_SERVER_MAX_MS);
+
+    /* Programming session: the app cannot flash its own slot (the bootloader
+     * owns flashing). Respond, then hand off -- set the no-init stay-in-BL
+     * flag and reset; the BL consumes it and opens its flash server.
+     * g_soft_reset_requested resets ~50ms later in vMainTask, after the
+     * response has drained. */
+    if (sub == DIAG_SESSION_PROGRAMMING) {
+        volatile bl_handoff_t *ho = (volatile bl_handoff_t *)BL_HANDOFF_ADDR;
+        ho->reason = BL_REASON_UPDATE;
+        ho->magic  = BL_HANDOFF_MAGIC;   /* magic last -- write order matters */
+        g_soft_reset_requested = 1U;
+        Debug_Print("[UDS] Programming session -> bootloader handoff\r\n");
+    }
 }
 
 /**
@@ -1388,141 +1373,6 @@ static void handle_input_output_control(const uint8_t *req, uint16_t req_len,
     resp[4] = s_io_port;   /* current IO state */
     *resp_len = 5U;
     Debug_Print("[UDS] IOControl 0x%04X ctrl=%u val=%u\r\n", did, control, s_io_port);
-}
-
-/* === OTA transfer state (0x34/0x36/0x37) === */
-static uint8_t  s_xfer_active    = 0U;   /* 1=download in progress */
-static uint32_t s_xfer_addr      = 0U;   /* write start address */
-static uint32_t s_xfer_size      = 0U;   /* total size */
-static uint32_t s_xfer_written   = 0U;   /* bytes written */
-static uint8_t  s_xfer_block_seq = 0U;   /* next expected blockSequenceCounter (1~) */
-
-/**
- * @brief  SID 0x34: RequestDownload -- parse addr/size (ALFID), validate OTA region, erase, start transfer
- * @note   Writes to OTA data region (0x0801E000~) without bootloader. App replacement/jump
- *         is the bootloader stage.
- *         Extended session + SecurityAccess required.
- */
-static void handle_request_download(const uint8_t *req, uint16_t req_len,
-                                    uint8_t *resp, uint16_t *resp_len)
-{
-    if (req_len < 3U) {  /* SID + ALFID */
-        build_negative_response(UDS_SID_REQUEST_DOWNLOAD, NRC_INCORRECT_MSG_LEN,
-                               resp, resp_len);
-        return;
-    }
-
-    uint8_t alfid = req[1];
-    uint8_t alen = (uint8_t)(alfid & 0x0FU);
-    uint8_t slen = (uint8_t)((alfid >> 4U) & 0x0FU);
-    if (alen == 0U || slen == 0U || alen > 4U || slen > 4U) {
-        build_negative_response(UDS_SID_REQUEST_DOWNLOAD, NRC_REQUEST_OUT_OF_RANGE,
-                               resp, resp_len);
-        return;
-    }
-    if (req_len < (uint16_t)(2U + (uint16_t)alen + (uint16_t)slen)) {
-        build_negative_response(UDS_SID_REQUEST_DOWNLOAD, NRC_INCORRECT_MSG_LEN,
-                               resp, resp_len);
-        return;
-    }
-
-    uint32_t addr = 0U;
-    uint32_t size = 0U;
-    for (uint8_t i = 0U; i < alen; i++) {
-        addr = (addr << 8U) | req[2U + i];
-    }
-    for (uint8_t i = 0U; i < slen; i++) {
-        size = (size << 8U) | req[2U + alen + i];
-    }
-
-    /* Region validation: OTA data region (0x0801E000~0x0801FFFF) only */
-    if ((addr < OTA_FLASH_BASE) || ((addr + size) > OTA_FLASH_END)) {
-        build_negative_response(UDS_SID_REQUEST_DOWNLOAD, NRC_REQUEST_OUT_OF_RANGE,
-                               resp, resp_len);
-        return;
-    }
-    /* page-level erase */
-    if (ota_flash_erase(addr, size) != 0) {
-        build_negative_response(UDS_SID_REQUEST_DOWNLOAD, NRC_GENERAL_PROGRAMMING_FAILURE,
-                               resp, resp_len);
-        return;
-    }
-
-    s_xfer_active = 1U;
-    s_xfer_addr = addr;
-    s_xfer_size = size;
-    s_xfer_written = 0U;
-    s_xfer_block_seq = 1U;
-
-    /* Response: [0x74, lengthFormatIdentifier, maxNumberOfBlockLength(2B big-endian)]
-     * lengthFormatIdentifier low nibble = maxBlockLength length (2 bytes). maxBlockLength=248. */
-    resp[0] = UDS_SID_REQUEST_DOWNLOAD + UDS_RESPONSE_SID_OFFSET;  /* 0x74 */
-    resp[1] = 0x22U;
-    resp[2] = 0x00U;
-    resp[3] = 0xF8U;  /* maxNumberOfBlockLength = 248 */
-    *resp_len = 4U;
-    Debug_Print("[UDS] OTA download: addr=0x%08lX size=%lu\r\n",
-                (unsigned long)addr, (unsigned long)size);
-}
-
-/**
- * @brief  SID 0x36: TransferData -- blockSequenceCounter verification, flash write
- */
-static void handle_transfer_data(const uint8_t *req, uint16_t req_len,
-                                 uint8_t *resp, uint16_t *resp_len)
-{
-    if ((s_xfer_active == 0U) || (req_len < 3U)) {  /* SID + blockSeq + data */
-        build_negative_response(UDS_SID_TRANSFER_DATA, NRC_CONDITIONS_NOT_CORRECT,
-                               resp, resp_len);
-        return;
-    }
-
-    uint8_t seq = req[1];
-    if (seq != s_xfer_block_seq) {
-        build_negative_response(UDS_SID_TRANSFER_DATA, NRC_WRONG_BLOCK_SEQUENCE,
-                               resp, resp_len);
-        return;
-    }
-
-    uint32_t dlen = (uint32_t)(req_len - 2U);
-    if ((s_xfer_written + dlen) > s_xfer_size) {
-        build_negative_response(UDS_SID_TRANSFER_DATA, NRC_TRANSFER_DATA_SUSPENDED,
-                               resp, resp_len);
-        return;
-    }
-    if (ota_flash_write(s_xfer_addr + s_xfer_written, &req[2], dlen) != 0) {
-        build_negative_response(UDS_SID_TRANSFER_DATA, NRC_GENERAL_PROGRAMMING_FAILURE,
-                               resp, resp_len);
-        return;
-    }
-
-    s_xfer_written += dlen;
-    s_xfer_block_seq++;
-
-    resp[0] = UDS_SID_TRANSFER_DATA + UDS_RESPONSE_SID_OFFSET;  /* 0x76 */
-    resp[1] = seq;
-    *resp_len = 2U;
-}
-
-/**
- * @brief  SID 0x37: RequestTransferExit -- transfer complete
- * @note   CRC/signature verification omitted (simulator). Production requires CRC32/signature.
- */
-static void handle_request_transfer_exit(const uint8_t *req, uint16_t req_len,
-                                         uint8_t *resp, uint16_t *resp_len)
-{
-    (void)req;
-    (void)req_len;
-    if (s_xfer_active == 0U) {
-        build_negative_response(UDS_SID_REQUEST_TRANSFER_EXIT, NRC_CONDITIONS_NOT_CORRECT,
-                               resp, resp_len);
-        return;
-    }
-    s_xfer_active = 0U;
-    resp[0] = UDS_SID_REQUEST_TRANSFER_EXIT + UDS_RESPONSE_SID_OFFSET;  /* 0x77 */
-    *resp_len = 1U;
-    Debug_Print("[UDS] OTA exit: written=%lu/%lu\r\n",
-                (unsigned long)s_xfer_written, (unsigned long)s_xfer_size);
 }
 
 /* === 0x23 ReadMemoryByAddress readable regions (STM32G431 memory map) ===

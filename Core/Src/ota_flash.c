@@ -3,13 +3,15 @@
  * @brief   OTA flash erase/write (STM32G4 HAL)
  */
 #include "ota_flash.h"
+#include "bl_handoff.h"       /* APP_BASE/FLASH_END: BL flash map */
 #include "stm32g4xx_hal_flash.h"
 #include <string.h>
 
-/* Range check: is it within the OTA data area */
+/* Range check: bootloader flash target -- app slot + meta page.
+ * (Was the 8KB OTA region only; the bootloader owns the whole upper map now.) */
 static int in_range(uint32_t addr, uint32_t size)
 {
-    return (addr >= OTA_FLASH_BASE) && ((addr + size) <= OTA_FLASH_END);
+    return (addr >= APP_BASE) && ((addr + size) <= FLASH_END);
 }
 
 int ota_flash_erase(uint32_t addr, uint32_t size)
@@ -59,11 +61,15 @@ int ota_flash_write(uint32_t addr, const uint8_t *data, uint32_t len)
     HAL_StatusTypeDef s = HAL_OK;
     uint32_t i = 0U;
 
-    /* Write in doubleword (8-byte) units. Residual (less than 8) ignored -- simulator
-     * simplification. */
-    while ((i + 8U) <= len) {
+    /* Write in doubleword (8-byte) units. Sub-8 residual is padded with 0xFF
+     * (erased state) so trailing bytes are preserved -- the old simulator
+     * simplification (drop residual) corrupted odd-sized images. */
+    while (i < len) {
+        uint8_t chunk[8] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+        uint32_t n = (len - i) >= 8U ? 8U : (len - i);
+        (void)memcpy(chunk, &data[i], n);
         uint64_t dw;
-        (void)memcpy(&dw, &data[i], 8U);
+        (void)memcpy(&dw, chunk, 8U);
         s = HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, addr + i, dw);
         if (s != HAL_OK) {
             break;
