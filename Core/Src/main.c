@@ -204,7 +204,7 @@ int main(void)
     Debug_Print("[INIT] FDCAN1 ready - FD BRS 500k/2M @ HSE 24MHz\r\n");
 
     Debug_Print("[INIT] Accepting all std frames 0x000-0x7FF -> RX FIFO0 (OBD-II req 0x%03X, resp 0x7E8)\r\n", OBD2_REQUEST_ID);
-    Debug_Print("[INIT] UDS Services: 0x10/11/14/19/22/23/27/28/2A/2C/2E/2F/31/34/36/37/3E/85\r\n");
+    Debug_Print("[INIT] UDS Services: 0x10/11/14/19/22/23/27/28/2A/2C/2E/2F/31/3E/85 (0x34/36/37 -> bootloader)\r\n");
     Debug_Print("[INIT] OBD-II PIDs: 0x00, 0x05, 0x0C, 0x0D\r\n");
 
     /* --- RS485 initialization (USART1 + MAX485 DE/RE) --- */
