@@ -35,6 +35,21 @@ static uint32_t s_saved_rollback = 0U;   /* meta counter read at 0x34 (page eras
 /* 0x11 reset handshake: response must fully drain before NVIC_SystemReset */
 volatile uint8_t bl_reset_pending = 0U;
 
+/* Drop an in-flight transfer (interrupted update). Called when the session
+ * returns to Default (S3 timeout or 0x10 01/03): without this, a stale
+ * s_xfer_* survives in RAM and later 0x36s answer 0x73 instead of 0x22. */
+void BL_UDS_ResetTransfer(void)
+{
+    if (s_xfer_active != 0U) {
+        Debug_Print("[BL-UDS] Transfer state dropped (session -> Default)\r\n");
+    }
+    s_xfer_active    = 0U;
+    s_xfer_closed    = 0U;
+    s_xfer_size      = 0U;
+    s_xfer_written   = 0U;
+    s_xfer_block_seq = 0U;
+}
+
 /* === Helpers === */
 
 static void nrc(uint8_t sid, uint8_t code, uint8_t *resp, uint16_t *resp_len)

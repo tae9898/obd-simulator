@@ -275,8 +275,12 @@ void HAL_FDCAN_RxFifo0Callback(FDCAN_HandleTypeDef *hfdcan,
             /* Bootloader: push to ring buffer, drained by the superloop */
             bl_ring_push(&rx_msg);
 #else
-            /* Send to Queue (ISR-only function) */
-            xQueueSendFromISR(xCanRxQueue, &rx_msg, &xHigherPriorityTaskWoken);
+            /* Send to Queue (ISR-only function). Drop if the queue is not
+             * created yet (frames can arrive between HAL_FDCAN_Start and
+             * queue creation on early-boot tester traffic). */
+            if (xCanRxQueue != NULL) {
+                xQueueSendFromISR(xCanRxQueue, &rx_msg, &xHigherPriorityTaskWoken);
+            }
 #endif
         }
 

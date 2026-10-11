@@ -218,6 +218,17 @@ int main(void)
         }
     }
 
+    /* --- CAN RX Queue creation (must precede HAL_FDCAN_Start: RX interrupts
+     * arm at Start, and the callback would fault on a NULL queue handle if a
+     * frame arrives before creation -- seen as a mid-banner hang when the
+     * tester polls during app boot after an update) --- */
+    xCanRxQueue = xQueueCreate(CAN_RX_QUEUE_LEN, sizeof(CAN_RxMessage_t));
+    if (xCanRxQueue == NULL) {
+        Debug_Print("[ERROR] CAN RX Queue create failed\r\n");
+        while (1);
+    }
+    Debug_Print("[RTOS] CAN RX Queue created (depth=%u)\r\n", CAN_RX_QUEUE_LEN);
+
     /* --- FDCAN1 start --- */
     if (HAL_FDCAN_Start(&hfdcan1) != HAL_OK) {
         Debug_Print("[ERROR] FDCAN1 start failed\r\n");
@@ -266,14 +277,6 @@ int main(void)
     /* ========================================
      * FreeRTOS object creation + task start
      * ======================================== */
-
-    /* --- CAN RX Queue creation --- */
-    xCanRxQueue = xQueueCreate(CAN_RX_QUEUE_LEN, sizeof(CAN_RxMessage_t));
-    if (xCanRxQueue == NULL) {
-        Debug_Print("[ERROR] CAN RX Queue create failed\r\n");
-        while (1);
-    }
-    Debug_Print("[RTOS] CAN RX Queue created (depth=%u)\r\n", CAN_RX_QUEUE_LEN);
 
     /* --- UART Mutex creation (Debug_Print thread safety) --- */
     xUartMutex = xSemaphoreCreateMutex();

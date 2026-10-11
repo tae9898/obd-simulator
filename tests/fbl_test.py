@@ -44,7 +44,8 @@ def send_recv_uds(tester: UDSTester, payload: bytes, timeout: float = 2.0):
     """Send one UDS request (SF or FF/CF per size), return response bytes.
 
     SF  (<=7B):  classic 8B frame, zero-padded (ECU accepts classic requests)
-    SF  (<=62B): CAN-FD single frame
+    SF  (<=62B): CAN-FD escape SF [0x00][len][payload] -- a bare [len] prefix
+                 would collide with the FF PCI (e.g. len 22 = 0x16 = "FF, 1590B")
     FF/CF (>62B): first frame 0x10|hi lo + 62B, wait FC (BS=0 from ECU),
                   consecutive frames 0x20|seq + 63B, spaced by FC STmin
     """
@@ -56,8 +57,8 @@ def send_recv_uds(tester: UDSTester, payload: bytes, timeout: float = 2.0):
             # classic SF: [PCI=len][payload][pad to 8]
             msg = can_Message(tester, [n] + list(payload) + [0] * (7 - n), is_fd=False)
         else:
-            # CAN-FD SF: [PCI=len][payload]
-            msg = can_Message(tester, [n] + list(payload), is_fd=True)
+            # CAN-FD escape SF: [0x00][len][payload][pad to 64]
+            msg = can_Message(tester, [0x00, n] + list(payload) + [0] * (62 - n), is_fd=True)
         bus.send(msg)
     else:
         # First Frame (12-bit length)
@@ -96,11 +97,23 @@ def send_recv_uds(tester: UDSTester, payload: bytes, timeout: float = 2.0):
             elif off < n:
                 time.sleep(0.002)   # be gentle even at STmin=0
 
-    # Response (all FBL responses fit a single frame)
-    resp = bus.recv(timeout=timeout)
-    if resp is None or resp.arbitration_id != tester.RESPONSE_ID:
-        return None
-    return bytes(resp.data)
+    # Response (all FBL responses fit a single frame).
+    # Loop until the deadline: a flaky bus yields error frames / ghost IDs /
+    # late stale responses around the real one -- skip anything that is not
+    # from the ECU instead of giving up on the first wrong frame.
+    deadline = time.time() + timeout
+    while True:
+        remain = deadline - time.time()
+        if remain <= 0:
+            return None
+        resp = bus.recv(timeout=min(remain, 0.5))
+        if resp is None:
+            continue
+        if getattr(resp, 'is_error_frame', False):
+            continue
+        if resp.arbitration_id != tester.RESPONSE_ID:
+            continue
+        return bytes(resp.data)
 
 
 def can_Message(tester, data, is_fd):
@@ -168,12 +181,19 @@ def enter_bl(tester, report, wait_unlock_delay=True):
             if wait_unlock_delay:
                 time.sleep(1.2)   # 0x27 boot delay (NRC 0x37 window)
             return True
+        if kind == 'pos':
+            # app still answering: the 0x10 02 was lost on the wire -- retry
+            send_recv_uds(tester, bytes([0x10, 0x02]))
         time.sleep(0.2)
     return False
 
 
 def unlock(tester, report, name="0x27 unlock"):
     kind, code = parse_uds(tester, send_recv_uds(tester, bytes([0x27, 0x01])), 0x27)
+    if kind == 'nrc' and code == 0x37:
+        # security boot-delay (1s from BL boot-ready) not expired yet -- wait it out
+        time.sleep(1.2)
+        kind, code = parse_uds(tester, send_recv_uds(tester, bytes([0x27, 0x01])), 0x27)
     if kind != 'pos' or len(code) < 3:   # payload = [level, seed_hi, seed_lo]
         check(report, name, kind, code, 'pos', raw_tx="27 01")
         return False
@@ -190,13 +210,14 @@ def request_download(tester, size):
 
 
 def transfer_blocks(tester, image: bytes, skip_block=None):
-    """0x36 all blocks (seq from 1). skip_block=i skips writing block i (brick test)."""
+    """0x36 all blocks (seq from 1). skip_block=i zeroes block i's data (brick
+    test): the block sequence stays contiguous (skipping a seq number would
+    rightly earn 0x73) and the corrupted data breaks the image CRC instead."""
     seq = 1
     for off in range(0, len(image), MAX_BLOCK):
-        if skip_block is not None and (off // MAX_BLOCK) == skip_block:
-            seq += 1
-            continue
         block = image[off:off + MAX_BLOCK]
+        if skip_block is not None and (off // MAX_BLOCK) == skip_block:
+            block = bytes(len(block))   # same length, wrong data
         req = bytes([0x36, seq & 0xFF]) + block
         kind, code = parse_uds(tester, send_recv_uds(tester, req, timeout=5.0), 0x36)
         if kind != 'pos':
@@ -295,8 +316,10 @@ def test_brick_and_recovery(tester, report, image):
           'nrc' if not in_app(tester) else 'pos', 0x11 if not in_app(tester) else None,
           'nrc', 0x11)
 
-    # recovery: full cycle on top
-    if unlock(tester, report, "0x27 unlock (recovery)"):
+    # recovery: full cycle on top. enter_bl first: after the 0x11 reset the
+    # resident BL boots WITHOUT the handoff flag -> session is Default, and
+    # 0x34 would answer 0x33 until 0x10 02 re-enters programming.
+    if enter_bl(tester, report) and unlock(tester, report, "0x27 unlock (recovery)"):
         if flash_full_cycle(tester, report, image, PASS_VERSION + 2, "(recovery)"):
             parse_uds(tester, send_recv_uds(tester, bytes([0x11, 0x01])), 0x11)
             time.sleep(1.0)

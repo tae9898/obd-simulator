@@ -35,10 +35,35 @@ void bl_jump_to_app(void);
 
 /* bl_uds.c */
 extern volatile uint8_t bl_reset_pending;
+void BL_UDS_ResetTransfer(void);
 
 /* diag_session.c links these (Default-session restore); no OBD machinery in BL */
 void OBD2_DtcSettingControl(uint8_t on) { (void)on; }
 void UDS_PeriodicStopAll(void) { }
+
+/* Stream sink: >512B receptions never have a BL consumer (0x34 caps blocks at
+ * 248B), so log and discard -- mirrors the app's ota_stream_sink contract. */
+static void bl_stream_sink(ISO_TP_StreamEvent_t event,
+                           const uint8_t *data, uint32_t len, uint32_t total_size)
+{
+    (void)data;
+    (void)len;
+    switch (event) {
+        case ISO_TP_STREAM_BEGIN:
+            Debug_Print("[FBL] Stream rx begin total=%lu (no consumer, discard)\r\n",
+                        (unsigned long)total_size);
+            break;
+        case ISO_TP_STREAM_END:
+            Debug_Print("[FBL] Stream rx end (%luB discarded)\r\n",
+                        (unsigned long)total_size);
+            break;
+        case ISO_TP_STREAM_ERROR:
+            Debug_Print("[FBL] Stream rx aborted\r\n");
+            break;
+        default:
+            break;
+    }
+}
 
 int main(void)
 {
@@ -81,6 +106,7 @@ int main(void)
     /* --- UDS flash server bring-up (same FDCAN/ISO-TP stack as the app) --- */
     DiagSession_Init();
     ISO_TP_Init();
+    ISO_TP_RegisterStreamSink(bl_stream_sink);
 
     if (FDCAN1_InitFD(&hfdcan1) != HAL_OK ||
         FDCAN1_ConfigureFilters(&hfdcan1) != HAL_OK ||
@@ -104,6 +130,7 @@ int main(void)
     Debug_Print("[FBL] Server ready (0x10 02/27/28/31/34/36/37/3E/85)\r\n");
 
     uint32_t reset_at = 0U;
+    uint8_t prev_session = DiagSession_Get();
     while (1) {
         /* RX: drain the ISR ring -> ISO-TP reassembly (dispatch runs inline) */
         CAN_RxMessage_t frame;
@@ -113,6 +140,15 @@ int main(void)
 
         ISO_TP_Tick(HAL_GetTick());
         DiagSession_Tick(HAL_GetTick());
+
+        /* Any route back to Default (S3 timeout or 0x10 01/03) ends the
+         * programming attempt: drop stale transfer state so later 0x36s
+         * answer 0x22, not a stale-sequence 0x73. */
+        uint8_t session = DiagSession_Get();
+        if ((session != prev_session) && (session == DIAG_SESSION_DEFAULT)) {
+            BL_UDS_ResetTransfer();
+        }
+        prev_session = session;
 
         /* 0x11: reset after the response drained (ISO-TP TX is paced) */
         if (bl_reset_pending != 0U) {
