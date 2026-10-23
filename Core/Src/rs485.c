@@ -132,6 +132,9 @@ HAL_StatusTypeDef RS485_ForwardCANMessage(uint32_t can_id, const uint8_t *data, 
  */
 void RS485_RestartReceive(void)
 {
+    /* A UART error mid-frame invalidates the partial assembly: drop it so the
+     * next byte starts a fresh [ID_H][ID_L][DLC] header. */
+    s_rx_len = 0U;
     HAL_UART_Receive_IT(&huart1, (uint8_t *)&s_rx_byte, 1);
 }
 
@@ -141,7 +144,8 @@ void RS485_RestartReceive(void)
  * @note   USART1 interrupt-based receive:
  *         - Called on each 1-byte receive
  *         - Store byte in buffer
- *         - Deliver to Queue when buffer is full or frame ends
+ *         - Deliver to Queue when the [ID_H ID_L DLC] header + DLC data
+ *           bytes are complete (3 + DLC, variable length)
  *         - Re-enable next 1-byte receive
  */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
@@ -155,14 +159,24 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
             s_rx_len++;
         }
 
-        /* Deliver to Queue when buffer is full */
-        if (s_rx_len >= RS485_MAX_DATA_LEN) {
-            RS485_RxMessage_t rx_msg;
-            rx_msg.len = s_rx_len;
-            (void)memcpy(rx_msg.data, (const void *)s_rx_buf, s_rx_len);
+        /* Frame length is data-dependent: the DLC byte ends the header, so
+         * validate it and deliver as soon as 3 + DLC bytes arrived (waiting
+         * for the full 67B buffer would stall every short frame). A DLC over
+         * 64 cannot match the TX format: drop the partial frame to resync. */
+        if (s_rx_len >= 3U) {
+            uint8_t dlc = s_rx_buf[2];
+            if (dlc > 64U) {
+                s_rx_len = 0U;
+            } else if (s_rx_len >= (uint8_t)(3U + dlc)) {
+                RS485_RxMessage_t rx_msg;
+                rx_msg.len = (uint8_t)(3U + dlc);
+                (void)memcpy(rx_msg.data, (const void *)s_rx_buf, rx_msg.len);
 
-            xQueueSendFromISR(xRS485RxQueue, &rx_msg, &xHigherPriorityTaskWoken);
-            s_rx_len = 0;
+                xQueueSendFromISR(xRS485RxQueue, &rx_msg, &xHigherPriorityTaskWoken);
+                s_rx_len = 0U;
+            } else {
+                /* data bytes still arriving */
+            }
         }
 
         /* Re-enable next byte receive */
