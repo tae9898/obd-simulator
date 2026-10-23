@@ -17,6 +17,7 @@
 #include "bl_handoff.h"
 #include "ota_flash.h"
 #include "uart_debug.h"
+#include "iso_tp.h"       /* ISO_TP_SendResponse: NRC 0x78 before the 0x34 erase */
 #include <string.h>
 
 /* bl_boot.c */
@@ -250,6 +251,14 @@ static void handle_request_download(const uint8_t *req, uint16_t req_len,
     if ((addr != APP_BASE) || (size == 0U) || (size > APP_SLOT_SIZE)) {
         nrc(UDS_SID_REQUEST_DOWNLOAD, NRC_REQUEST_OUT_OF_RANGE, resp, resp_len);
         return;
+    }
+
+    /* The meta write + erase below run up to ~1s -- far beyond P2 (50ms).
+     * Send NRC 0x78 first so the tester switches to its P2* (5s) budget
+     * before the bus goes quiet; the final 0x74 (or an NRC) follows after. */
+    {
+        uint8_t pending[3] = {0x7FU, UDS_SID_REQUEST_DOWNLOAD, NRC_RESPONSE_PENDING};
+        ISO_TP_SendResponse(CAN_ID_PHYSICAL_RESP, pending, 3U);
     }
 
     /* 1. Save the rollback counter, then invalidate meta (UPDATING marker) */

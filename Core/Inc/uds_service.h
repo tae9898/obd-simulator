@@ -68,6 +68,7 @@ extern "C" {
 #define NRC_TRANSFER_DATA_SUSPENDED     0x71U  /**< TransferData suspended (size exceeded etc.) */
 #define NRC_GENERAL_PROGRAMMING_FAILURE 0x72U  /**< flash write failure */
 #define NRC_WRONG_BLOCK_SEQUENCE        0x73U  /**< blockSequenceCounter mismatch */
+#define NRC_RESPONSE_PENDING            0x78U  /**< requestCorrectlyReceived-ResponsePending (long op: 0x34 slot erase) */
 
 /* === ECU Reset subfunctions === */
 #define UDS_RESET_HARD              0x01U  /**< hard reset (full restart) */

@@ -40,8 +40,9 @@ LOW_VERSION = 1
 #=======================================
 # ISO-TP multi-frame sender + helpers
 #=======================================
-def send_recv_uds(tester: UDSTester, payload: bytes, timeout: float = 2.0):
-    """Send one UDS request (SF or FF/CF per size), return response bytes.
+def send_uds(tester: UDSTester, payload: bytes, timeout: float = 2.0):
+    """Send one UDS request (SF or FF/CF per size). Send-only half of
+    send_recv_uds, split out so pending-response waits can reuse it.
 
     SF  (<=7B):  classic 8B frame, zero-padded (ECU accepts classic requests)
     SF  (<=62B): CAN-FD escape SF [0x00][len][payload] -- a bare [len] prefix
@@ -78,7 +79,7 @@ def send_recv_uds(tester: UDSTester, payload: bytes, timeout: float = 2.0):
                 fc = m.data
                 break
         if fc is None:
-            return None
+            return
         stmin_ms = fc[2] & 0x7F if fc[2] < 0xF9 else 0
         stmin_ms = max(stmin_ms, 0)
 
@@ -97,10 +98,11 @@ def send_recv_uds(tester: UDSTester, payload: bytes, timeout: float = 2.0):
             elif off < n:
                 time.sleep(0.002)   # be gentle even at STmin=0
 
-    # Response (all FBL responses fit a single frame).
-    # Loop until the deadline: a flaky bus yields error frames / ghost IDs /
-    # late stale responses around the real one -- skip anything that is not
-    # from the ECU instead of giving up on the first wrong frame.
+
+def recv_uds(tester: UDSTester, timeout: float):
+    """Next valid ECU response frame (all FBL responses fit a single frame).
+    A flaky bus yields error frames / ghost IDs / late stale responses around
+    the real one -- skip anything not from the ECU instead of giving up."""
     deadline = time.time() + timeout
     while True:
         remain = deadline - time.time()
@@ -114,6 +116,11 @@ def send_recv_uds(tester: UDSTester, payload: bytes, timeout: float = 2.0):
         if resp.arbitration_id != tester.RESPONSE_ID:
             continue
         return bytes(resp.data)
+
+
+def send_recv_uds(tester: UDSTester, payload: bytes, timeout: float = 2.0):
+    send_uds(tester, payload, timeout)
+    return recv_uds(tester, timeout)
 
 
 def can_Message(tester, data, is_fd):
@@ -205,8 +212,16 @@ def unlock(tester, report, name="0x27 unlock"):
 
 
 def request_download(tester, size):
+    """0x34 with NRC 0x78 handling: the BL sends responsePending before the
+    slot erase (~1s), so keep waiting for the final 0x74/NRC within one P2*
+    style budget (5s) instead of returning on the first frame."""
     req = bytes([0x34, 0x44]) + APP_BASE.to_bytes(4, 'big') + size.to_bytes(4, 'big')
-    return parse_uds(tester, send_recv_uds(tester, req, timeout=5.0), 0x34)
+    deadline = time.time() + 5.0
+    send_uds(tester, req)
+    kind, code = parse_uds(tester, recv_uds(tester, deadline - time.time()), 0x34)
+    while kind == 'nrc' and code == 0x78:
+        kind, code = parse_uds(tester, recv_uds(tester, deadline - time.time()), 0x34)
+    return kind, code
 
 
 def transfer_blocks(tester, image: bytes, skip_block=None):
