@@ -234,11 +234,11 @@ int DiagSession_CheckAccess(uint8_t sid)
         if (k_access_rules[i].sid == sid) {
             if ((k_access_rules[i].need_extended != 0U) &&
                 (s_session.session_type != DIAG_SESSION_EXTENDED)) {
-                return -1;
+                return DIAG_ACCESS_WRONG_SESSION;
             }
             if ((k_access_rules[i].need_security != 0U) &&
                 (s_session.security_level == DIAG_SEC_LOCKED)) {
-                return -1;
+                return DIAG_ACCESS_LOCKED;
             }
             return 0;
         }

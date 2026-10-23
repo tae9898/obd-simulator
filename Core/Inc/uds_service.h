@@ -69,6 +69,7 @@ extern "C" {
 #define NRC_GENERAL_PROGRAMMING_FAILURE 0x72U  /**< flash write failure */
 #define NRC_WRONG_BLOCK_SEQUENCE        0x73U  /**< blockSequenceCounter mismatch */
 #define NRC_RESPONSE_PENDING            0x78U  /**< requestCorrectlyReceived-ResponsePending (long op: 0x34 slot erase) */
+#define NRC_SERVICE_NOT_SUPPORTED_IN_ACTIVE_SESSION 0x7FU  /**< service not supported in active session */
 
 /* === ECU Reset subfunctions === */
 #define UDS_RESET_HARD              0x01U  /**< hard reset (full restart) */

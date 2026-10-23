@@ -184,6 +184,24 @@ static void handle_obd2_service09(const uint8_t *req, uint16_t req_len,
 static void build_negative_response(uint8_t sid, uint8_t nrc,
                                     uint8_t *resp, uint16_t *resp_len);
 
+/** Dispatch-table session/security gate with the ISO 14229-1 NRC split:
+ *  wrong active session -> 0x7F, session ok but locked -> 0x33.
+ *  Returns 0 when allowed; otherwise the negative response is built. */
+static int access_gate(uint8_t sid, uint8_t *resp, uint16_t *resp_len)
+{
+    int rc = DiagSession_CheckAccess(sid);
+    if (rc == DIAG_ACCESS_WRONG_SESSION) {
+        build_negative_response(sid, NRC_SERVICE_NOT_SUPPORTED_IN_ACTIVE_SESSION,
+                                resp, resp_len);
+        return -1;
+    }
+    if (rc == DIAG_ACCESS_LOCKED) {
+        build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED, resp, resp_len);
+        return -1;
+    }
+    return 0;
+}
+
 /* ====================================================
  * Public API
  * ==================================================== */
@@ -274,12 +292,10 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
             break;
 
         case UDS_SID_CLEAR_DIAG_INFO:
-            if (DiagSession_CheckAccess(sid) != 0) {
-                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
-                                       response, response_len);
-            } else {
-                handle_clear_dtc(request, request_len, response, response_len);
+            if (access_gate(sid, response, response_len) != 0) {
+                break;
             }
+            handle_clear_dtc(request, request_len, response, response_len);
             break;
 
         case UDS_SID_READ_DATA_BY_ID:
@@ -287,29 +303,23 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
             break;
 
         case UDS_SID_READ_MEM_BY_ADDR:
-            if (DiagSession_CheckAccess(sid) != 0) {
-                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
-                                       response, response_len);
-            } else {
-                handle_read_mem_by_addr(request, request_len, response, response_len);
+            if (access_gate(sid, response, response_len) != 0) {
+                break;
             }
+            handle_read_mem_by_addr(request, request_len, response, response_len);
             break;
         case UDS_SID_READ_DATA_PERIODIC:
-            if (DiagSession_CheckAccess(sid) != 0) {
-                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
-                                       response, response_len);
-            } else {
-                handle_read_data_periodic(request, request_len, response, response_len);
+            if (access_gate(sid, response, response_len) != 0) {
+                break;
             }
+            handle_read_data_periodic(request, request_len, response, response_len);
             break;
 
         case UDS_SID_DYNAMIC_DEFINE_DID:
-            if (DiagSession_CheckAccess(sid) != 0) {
-                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
-                                       response, response_len);
-            } else {
-                handle_dynamic_define_did(request, request_len, response, response_len);
+            if (access_gate(sid, response, response_len) != 0) {
+                break;
             }
+            handle_dynamic_define_did(request, request_len, response, response_len);
             break;
 
         case UDS_SID_READ_DTC_INFORMATION:
@@ -321,12 +331,10 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
             break;
 
         case UDS_SID_ROUTINE_CONTROL:
-            if (DiagSession_CheckAccess(sid) != 0) {
-                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
-                                       response, response_len);
-            } else {
-                handle_routine_control(request, request_len, response, response_len);
+            if (access_gate(sid, response, response_len) != 0) {
+                break;
             }
+            handle_routine_control(request, request_len, response, response_len);
             break;
 
         case UDS_SID_TESTER_PRESENT:
@@ -334,39 +342,31 @@ void UDS_DispatchRequest(const uint8_t *request, uint16_t request_len,
             break;
 
         case UDS_SID_COMMUNICATION_CONTROL:
-            if (DiagSession_CheckAccess(sid) != 0) {
-                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
-                                       response, response_len);
-            } else {
-                handle_communication_control(request, request_len, response, response_len);
+            if (access_gate(sid, response, response_len) != 0) {
+                break;
             }
+            handle_communication_control(request, request_len, response, response_len);
             break;
 
         case UDS_SID_CONTROL_DTC_SETTING:
-            if (DiagSession_CheckAccess(sid) != 0) {
-                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
-                                       response, response_len);
-            } else {
-                handle_control_dtc_setting(request, request_len, response, response_len);
+            if (access_gate(sid, response, response_len) != 0) {
+                break;
             }
+            handle_control_dtc_setting(request, request_len, response, response_len);
             break;
 
         case UDS_SID_WRITE_DATA_BY_ID:
-            if (DiagSession_CheckAccess(sid) != 0) {
-                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
-                                       response, response_len);
-            } else {
-                handle_write_data_by_id(request, request_len, response, response_len);
+            if (access_gate(sid, response, response_len) != 0) {
+                break;
             }
+            handle_write_data_by_id(request, request_len, response, response_len);
             break;
 
         case UDS_SID_IO_CONTROL_BY_ID:
-            if (DiagSession_CheckAccess(sid) != 0) {
-                build_negative_response(sid, NRC_SECURITY_ACCESS_DENIED,
-                                       response, response_len);
-            } else {
-                handle_input_output_control(request, request_len, response, response_len);
+            if (access_gate(sid, response, response_len) != 0) {
+                break;
             }
+            handle_input_output_control(request, request_len, response, response_len);
             break;
 
         /* 0x34/0x36/0x37 (RequestDownload/TransferData/RequestTransferExit):

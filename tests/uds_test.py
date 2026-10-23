@@ -128,6 +128,7 @@ NRC_NAMES = {
     0x37: "requiredTimeDelayNotExpired",
     0x72: "generalProgrammingFailure",
     0x78: "requestCorrectlyReceived-ResponsePending",
+    0x7F: "serviceNotSupportedInActiveSession",
 }
 
 
@@ -750,19 +751,19 @@ def test_routine_control(tester: UDSTester, report: TestReport):
     """SID 0x31: RoutineControl test"""
     print(Color.header("SID 0x31: RoutineControl"))
 
-    # 1) Call from Default session -> NRC 0x33 (securityAccessDenied) expected
+    # 1) Call from Default session -> NRC 0x7F (serviceNotSupportedInActiveSession)
     tester.send_uds([0x02, 0x10, 0x01])
     time.sleep(0.05)
     resp = tester.send_uds([0x04, 0x31, 0x01, 0x02, 0x01])
     result = TestResult("RoutineControl from Default session")
     if resp:
         neg = tester.parse_negative(resp)
-        if neg and neg['nrc'] == 0x33:
+        if neg and neg['nrc'] == 0x7F:
             result.status = TestStatus.PASS
-            result.detail = f"NRC securityAccessDenied (expected)"
+            result.detail = f"NRC serviceNotSupportedInActiveSession (expected)"
         else:
             result.status = TestStatus.FAIL
-            result.detail = f"Expected NRC 0x33, got {neg['nrc_name'] if neg else 'positive'}"
+            result.detail = f"Expected NRC 0x7F, got {neg['nrc_name'] if neg else 'positive'}"
         result.raw_rx = resp.hex().upper()
     else:
         result.status = TestStatus.FAIL
@@ -907,8 +908,8 @@ def test_clear_dtc(tester: UDSTester, report: TestReport):
 
     tester.send_uds([0x02, 0x10, 0x01])
     time.sleep(0.05)
-    run_check(tester, report, "From Default session (NRC 0x33)",
-              [0x14, 0xFF, 0xFF, 0xFF], expect_nrc=0x33)
+    run_check(tester, report, "From Default session (NRC 0x7F)",
+              [0x14, 0xFF, 0xFF, 0xFF], expect_nrc=0x7F)
 
     tester.send_uds([0x02, 0x10, 0x03])
     time.sleep(0.05)
@@ -928,8 +929,8 @@ def test_control_dtc_setting(tester: UDSTester, report: TestReport):
 
     tester.send_uds([0x02, 0x10, 0x01])
     time.sleep(0.05)
-    run_check(tester, report, "From Default session (NRC 0x33)",
-              [0x85, 0x01], expect_nrc=0x33)
+    run_check(tester, report, "From Default session (NRC 0x7F)",
+              [0x85, 0x01], expect_nrc=0x7F)
 
     tester.send_uds([0x02, 0x10, 0x03])
     time.sleep(0.05)
@@ -949,8 +950,8 @@ def test_read_mem_by_addr(tester: UDSTester, report: TestReport):
 
     tester.send_uds([0x02, 0x10, 0x01])
     time.sleep(0.05)
-    run_check(tester, report, "From Default session (NRC 0x33)",
-              read_flash, expect_nrc=0x33)
+    run_check(tester, report, "From Default session (NRC 0x7F)",
+              read_flash, expect_nrc=0x7F)
 
     tester.send_uds([0x02, 0x10, 0x03])
     time.sleep(0.05)
@@ -997,8 +998,8 @@ def test_dynamic_define_did(tester: UDSTester, report: TestReport):
 
     tester.send_uds([0x02, 0x10, 0x01])
     time.sleep(0.05)
-    run_check(tester, report, "From Default session (NRC 0x33)",
-              [0x2C, 0x01, 0xF2, 0x00, 0xF1, 0x90, 0x01, 0x04], expect_nrc=0x33)
+    run_check(tester, report, "From Default session (NRC 0x7F)",
+              [0x2C, 0x01, 0xF2, 0x00, 0xF1, 0x90, 0x01, 0x04], expect_nrc=0x7F)
 
     tester.send_uds([0x02, 0x10, 0x03])
     time.sleep(0.05)
@@ -1083,8 +1084,8 @@ def test_periodic_read(tester: UDSTester, report: TestReport):
 
     tester.send_uds([0x02, 0x10, 0x01])
     time.sleep(0.05)
-    run_check(tester, report, "From Default session (NRC 0x33)",
-              [0x2A, 0x03, 0x00], expect_nrc=0x33)
+    run_check(tester, report, "From Default session (NRC 0x7F)",
+              [0x2A, 0x03, 0x00], expect_nrc=0x7F)
 
     tester.send_uds([0x02, 0x10, 0x03])
     time.sleep(0.05)

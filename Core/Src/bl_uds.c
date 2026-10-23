@@ -9,7 +9,7 @@
  *          Gating: 0x34/0x36/0x37/0x31 require PROGRAMMING session + security
  *          unlocked (inline check -- the shared k_access_rules table in
  *          diag_session.c is Extended-session based, which is inverted for a
- *          bootloader; repo NRC convention: 0x33 for both session and lock).
+ *          bootloader; NRC split as in the app: 0x7F wrong session / 0x33 locked).
  */
 
 #include "uds_service.h"
@@ -61,11 +61,15 @@ static void nrc(uint8_t sid, uint8_t code, uint8_t *resp, uint16_t *resp_len)
     *resp_len = 3U;
 }
 
-/** PROGRAMMING session + security unlocked, else NRC 0x33 (repo convention) */
+/** PROGRAMMING session + security unlocked, else the ISO 14229-1 NRC split:
+ *  wrong session -> 0x7F, session ok but locked -> 0x33 */
 static int gate_flash_services(uint8_t sid, uint8_t *resp, uint16_t *resp_len)
 {
-    if ((DiagSession_Get() != DIAG_SESSION_PROGRAMMING) ||
-        (DiagSession_SecurityUnlocked() == 0)) {
+    if (DiagSession_Get() != DIAG_SESSION_PROGRAMMING) {
+        nrc(sid, NRC_SERVICE_NOT_SUPPORTED_IN_ACTIVE_SESSION, resp, resp_len);
+        return -1;
+    }
+    if (DiagSession_SecurityUnlocked() == 0) {
         nrc(sid, NRC_SECURITY_ACCESS_DENIED, resp, resp_len);
         return -1;
     }

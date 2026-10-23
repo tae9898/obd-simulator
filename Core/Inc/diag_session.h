@@ -119,9 +119,15 @@ uint8_t DiagSession_Get(void);
 /** 1 = security unlocked (any level), 0 = locked */
 int DiagSession_SecurityUnlocked(void);
 
+/* DiagSession_CheckAccess return codes (ISO 14229-1 NRC distinction):
+ * wrong active session -> 0x7F, session ok but locked -> 0x33 */
+#define DIAG_ACCESS_OK             0
+#define DIAG_ACCESS_WRONG_SESSION  (-1)
+#define DIAG_ACCESS_LOCKED         (-2)
+
 /**
  * @brief  Service access permission check
- * @retval 0: allowed, -1: denied
+ * @retval DIAG_ACCESS_OK / DIAG_ACCESS_WRONG_SESSION / DIAG_ACCESS_LOCKED
  * @note   SID 0x31 requires Extended + Security Unlock
  */
 int  DiagSession_CheckAccess(uint8_t sid);
