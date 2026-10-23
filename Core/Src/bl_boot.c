@@ -106,6 +106,11 @@ void bl_jump_to_app(void)
     uint32_t sp   = *(volatile uint32_t *)APP_BASE;
     pFunc  reset = (pFunc)(*(volatile uint32_t *)(APP_BASE + 4U));
 
+    /* Hand the app a full IWDG window: the watchdog may still be counting
+     * (app-started, survives system reset) and the app does not reach its own
+     * first refresh until the RTOS tasks start. */
+    IWDG->KR = IWDG_KEY_RELOAD;
+
     __disable_irq();
     SysTick->CTRL = 0U;
     SysTick->LOAD = 0U;

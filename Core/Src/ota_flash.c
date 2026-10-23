@@ -20,11 +20,13 @@ int ota_flash_erase(uint32_t addr, uint32_t size)
         return -1;
     }
 
-    /* STM32G4 single bank: interrupt ISR accessing flash during erase causes race/error.
-     * Disable interrupts, clear error flags, then erase (erase ~22ms, HAL FLASH Wait uses
-     * BSY polling to detect completion even when HAL_GetTick stalls -- verified working
-     * in practice). */
-    __disable_irq();
+    /* Erase one page per HAL call so the loop can re-enable IRQs and refresh
+     * the IWDG between pages: the app may have started the watchdog before the
+     * handoff reset (only POR stops it), and a whole-slot erase (~46 pages,
+     * ~1s) without a refresh would trip the ~2s timeout mid-0x34. Per page:
+     * IRQs off (STM32G4 single bank: ISR flash access during erase races the
+     * controller; HAL FLASH Wait polls BSY, so completion is detected even
+     * when HAL_GetTick stalls), then IRQs on + IWDG reload. */
     HAL_FLASH_Unlock();
     __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_ALL_ERRORS);
 
@@ -32,23 +34,33 @@ int ota_flash_erase(uint32_t addr, uint32_t size)
     ei.TypeErase = FLASH_TYPEERASE_PAGES;
     ei.Banks     = FLASH_BANK_1;
     ei.Page      = (addr - 0x08000000U) / FLASH_PAGE_SIZE;
-    ei.NbPages   = (size + FLASH_PAGE_SIZE - 1U) / FLASH_PAGE_SIZE;
+    ei.NbPages   = 1U;
 
-    /* HAL_FLASHEx_Erase does not set PageError(err) on success.
-     * Therefore initialize to 0 for correct success check (previous 0xFFFFFFFF
-     * initial value always causes false failure). */
-    uint32_t err = 0U;
-    HAL_StatusTypeDef s = HAL_FLASHEx_Erase(&ei, &err);
-    uint32_t sraw = FLASH->SR;
+    uint32_t pages = (size + FLASH_PAGE_SIZE - 1U) / FLASH_PAGE_SIZE;
+    HAL_StatusTypeDef s = HAL_OK;
+
+    /* HAL quirks carried over from the batch erase: PageError(err) must start
+     * at 0 and may be set even on success, so success is HAL_OK && SR error
+     * flags clear and err itself is ignored. */
+    for (uint32_t i = 0U; i < pages; i++) {
+        uint32_t err = 0U;
+        __disable_irq();
+        s = HAL_FLASHEx_Erase(&ei, &err);
+        uint32_t sraw = FLASH->SR;
+        __enable_irq();
+        (void)err;
+
+        if ((s != HAL_OK) || ((sraw & 0x0000FFU) != 0U)) {
+            HAL_FLASH_Lock();
+            return -1;
+        }
+
+        IWDG->KR = IWDG_KEY_RELOAD;
+        ei.Page++;
+    }
 
     HAL_FLASH_Lock();
-    __enable_irq();
-
-    /* STM32G4 HAL: there is behavior where PageError(err) is set even on success
-     * (HAL_OK, SR=0), so err==0 check is unreliable. Use s==HAL_OK && no SR error
-     * flags for success check. */
-    (void)err;
-    return ((s == HAL_OK) && ((sraw & 0x0000FFU) == 0U)) ? 0 : -1;
+    return 0;
 }
 
 int ota_flash_write(uint32_t addr, const uint8_t *data, uint32_t len)
@@ -58,6 +70,7 @@ int ota_flash_write(uint32_t addr, const uint8_t *data, uint32_t len)
     }
 
     HAL_FLASH_Unlock();
+    __disable_irq();   /* same single-bank ISR/flash race as the erase path */
     HAL_StatusTypeDef s = HAL_OK;
     uint32_t i = 0U;
 
@@ -77,6 +90,7 @@ int ota_flash_write(uint32_t addr, const uint8_t *data, uint32_t len)
         i += 8U;
     }
 
+    __enable_irq();
     HAL_FLASH_Lock();
     return (s == HAL_OK) ? 0 : -1;
 }

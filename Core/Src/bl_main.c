@@ -132,6 +132,11 @@ int main(void)
     uint32_t reset_at = 0U;
     uint8_t prev_session = DiagSession_Get();
     while (1) {
+        /* The app starts the IWDG before the programming handoff and only POR
+         * stops it: the watchdog is still counting in the BL, so kick it every
+         * loop (a reload-key write is a no-op when it was never started). */
+        IWDG->KR = IWDG_KEY_RELOAD;
+
         /* RX: drain the ISR ring -> ISO-TP reassembly (dispatch runs inline) */
         CAN_RxMessage_t frame;
         while (FDCAN_BL_Pop(&frame) != 0) {
