@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM toolchain + cppcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi cppcheck
+
+      # Drivers/ and Middlewares/FreeRTOS-Kernel are not part of this repo:
+      # the HAL/CMSIS trees are gitignored (see README "first time"), and
+      # FreeRTOS-Kernel is a bare gitlink pinned to d3b074a. Fetch both at
+      # the versions the firmware is built against.
+      - name: Fetch HAL / CMSIS / FreeRTOS
+        run: |
+          git clone --depth 1 https://github.com/STMicroelectronics/stm32g4xx_hal_driver.git Drivers/STM32G4xx_HAL_Driver
+          git clone --depth 1 https://github.com/STMicroelectronics/cmsis_device_g4.git Drivers/CMSIS/Device/ST/STM32G4xx
+          git clone --depth 1 --filter=blob:none --sparse https://github.com/ARM-software/CMSIS_5.git /tmp/CMSIS_5
+          git -C /tmp/CMSIS_5 sparse-checkout set CMSIS/Core/Include
+          mkdir -p Drivers/CMSIS
+          ln -s /tmp/CMSIS_5/CMSIS/Core/Include Drivers/CMSIS/Include
+          git clone https://github.com/FreeRTOS/FreeRTOS-Kernel.git Middlewares/FreeRTOS-Kernel
+          git -C Middlewares/FreeRTOS-Kernel checkout d3b074a01eb1b8959c7305ab69f2dd95828067c8
+
+      - name: Build app + bootloader
+        run: |
+          make -j"$(nproc)" all
+          make -j"$(nproc)" bl
+
+      - name: Size report
+        run: arm-none-eabi-size build/phase0-obd-simulator.elf build/bl/bootloader.elf
+
+      - name: Host unit test (DTC fault manager, no hardware)
+        run: |
+          gcc -Wall -I tests/host -I Core/Inc Core/Src/obd2_simulator.c \
+              tests/host/host_dtc_test.c -o /tmp/host_dtc_test
+          /tmp/host_dtc_test
+
+      # Gate on errors in project sources only: pre-existing style notes and
+      # findings inside the vendor trees (CMSIS/HAL) do not fail the build.
+      - name: cppcheck (error gate on Core/)
+        run: |
+          cppcheck --enable=warning,style,performance --std=c11 \
+            --suppress=missingIncludeSystem --suppress=unusedFunction --quiet \
+            -DSTM32G431xx -D__GNUC__ \
+            -I Core/Inc -I Drivers/CMSIS/Device/ST/STM32G4xx/Include \
+            -I Drivers/CMSIS/Include -I Drivers/STM32G4xx_HAL_Driver/Inc \
+            Core/Src 2>&1 | tee cppcheck.log
+          ! grep -E "^Core/.*: error:" cppcheck.log

@@ -1,5 +1,7 @@
 # STM32 OBD/UDS ECU Simulator + FreeRTOS Gateway
 
+[![CI](https://github.com/tae9898/obd-simulator/actions/workflows/ci.yml/badge.svg)](https://github.com/tae9898/obd-simulator/actions/workflows/ci.yml)
+
 STM32G431RB firmware for the SDV diagnostic gateway project. Acts as the
 **ECU node**: responds to OBD-II / UDS diagnostics over CAN-FD, and bridges
 CAN ↔ RS485 internally under FreeRTOS.
