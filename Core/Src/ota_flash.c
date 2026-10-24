@@ -37,7 +37,6 @@ int ota_flash_erase(uint32_t addr, uint32_t size)
     ei.NbPages   = 1U;
 
     uint32_t pages = (size + FLASH_PAGE_SIZE - 1U) / FLASH_PAGE_SIZE;
-    HAL_StatusTypeDef s = HAL_OK;
 
     /* HAL quirks carried over from the batch erase: PageError(err) must start
      * at 0 and may be set even on success, so success is HAL_OK && SR error
@@ -45,7 +44,7 @@ int ota_flash_erase(uint32_t addr, uint32_t size)
     for (uint32_t i = 0U; i < pages; i++) {
         uint32_t err = 0U;
         __disable_irq();
-        s = HAL_FLASHEx_Erase(&ei, &err);
+        HAL_StatusTypeDef s = HAL_FLASHEx_Erase(&ei, &err);
         uint32_t sraw = FLASH->SR;
         __enable_irq();
         (void)err;

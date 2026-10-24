@@ -261,7 +261,7 @@ static void handle_request_download(const uint8_t *req, uint16_t req_len,
      * Send NRC 0x78 first so the tester switches to its P2* (5s) budget
      * before the bus goes quiet; the final 0x74 (or an NRC) follows after. */
     {
-        uint8_t pending[3] = {0x7FU, UDS_SID_REQUEST_DOWNLOAD, NRC_RESPONSE_PENDING};
+        const uint8_t pending[3] = {0x7FU, UDS_SID_REQUEST_DOWNLOAD, NRC_RESPONSE_PENDING};
         ISO_TP_SendResponse(CAN_ID_PHYSICAL_RESP, pending, 3U);
     }
 
