@@ -103,6 +103,7 @@ def recv_uds(tester: UDSTester, timeout: float):
     """Next valid ECU response frame (all FBL responses fit a single frame).
     A flaky bus yields error frames / ghost IDs / late stale responses around
     the real one -- skip anything not from the ECU instead of giving up."""
+    bus = tester.bus
     deadline = time.time() + timeout
     while True:
         remain = deadline - time.time()
