@@ -1,7 +1,7 @@
 /**
   ******************************************************************************
   * @file      STM32G431RBTx_BL.ld
-  * @brief     STM32G431RB BOOTLOADER linker script (20KB)
+  * @brief     STM32G431RB BOOTLOADER linker script (28KB)
   * @note      CubeMX compatible structure
   ******************************************************************************
   * Memory map (see Core/Inc/bl_handoff.h):

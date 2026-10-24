@@ -70,7 +70,7 @@ typedef struct {
 
 static dyn_slot_t s_dyn[UDS_DYN_SLOTS];
 
-/* Periodic subscription (0x2A). ponytail: single-writer (rx task) u8 fields,
+/* Periodic subscription (0x2A). NOTE: single-writer (rx task) u8 fields,
  * main-task tick only reads -- divider is the validity flag, written last. */
 typedef struct {
     uint8_t pdid;      /* low byte; DID = 0xF200|pdid */

@@ -1,7 +1,7 @@
 /**
  * @file    bl_main.c
  * @brief   Bootloader entry: clock init + boot gate (meta CRC / handoff flag)
- * @note    Bare-metal superloop, no FreeRTOS (-DBL_BUILD). App slot at 0x08005000.
+ * @note    Bare-metal superloop, no FreeRTOS (-DBL_BUILD). App slot at 0x08007000.
  *
  * Boot gate:
  *   noinit flag UPDATE -> consume, stay in BL (programming session server)

@@ -237,7 +237,7 @@ clean:
 # flash target (using st-flash)
 # ============================================
 # Full sequence: mass erase (clears BL+app+meta -- avoids stale-meta boot gate
-# traps), then bootloader, then app at 0x08005000.
+# traps), then bootloader, then app at 0x08007000.
 flash:
 	st-flash erase
 	$(MAKE) flash-bl

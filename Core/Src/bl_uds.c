@@ -202,7 +202,7 @@ static void handle_tester_present(const uint8_t *req, uint16_t req_len,
 }
 
 /* 0x28 CommunicationControl / 0x85 ControlDTCSetting: no-op in the BL.
- * ponytail: BL has no other communication or DTC machinery to disable;
+ * NOTE: BL has no other communication or DTC machinery to disable;
  * accept and flag only -- if a BL-side comm gate is ever needed, hook here. */
 static void handle_noop_control(uint8_t sid, const uint8_t *req, uint16_t req_len,
                                 uint8_t *resp, uint16_t *resp_len)

@@ -9,7 +9,7 @@
 #include "ota_flash.h"
 #include <string.h>
 
-/* ponytail: CRC32-only integrity; add signature verify (ECDSA/HSM, AIS-189)
+/* NOTE: CRC32-only integrity; add signature verify (ECDSA/HSM, AIS-189)
  * before real-vehicle use. */
 
 /* === Reflected CRC-32 (poly 0xEDB88320, init/xorout 0xFFFFFFFF) ===

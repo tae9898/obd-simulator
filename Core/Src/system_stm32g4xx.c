@@ -53,7 +53,7 @@ void SystemInit(void)
      */
 
     /* Vector table offset: image base. The app build passes
-     * -DVTOR_FLASH_BASE=0x08005000U (sits above the bootloader); bootloader and
+     * -DVTOR_FLASH_BASE=0x08007000U (sits above the bootloader); bootloader and
      * standalone default to the flash start. */
 #ifndef VTOR_FLASH_BASE
 #define VTOR_FLASH_BASE 0x08000000U
