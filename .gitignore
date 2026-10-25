@@ -1,6 +1,15 @@
 # Build artifacts
 build/
 
+# FreeRTOS-Kernel vendored as tracked files (upstream d3b074a, clean tree).
+# portable/ is trimmed to the toolchain this firmware builds with; everything
+# else in the kernel tree is committed as-is.
+Middlewares/FreeRTOS-Kernel/portable/*
+!Middlewares/FreeRTOS-Kernel/portable/GCC/
+Middlewares/FreeRTOS-Kernel/portable/GCC/*
+!Middlewares/FreeRTOS-Kernel/portable/GCC/ARM_CM4F/
+!Middlewares/FreeRTOS-Kernel/portable/MemMang/
+
 # HAL driver (cloned from official ST repository)
 Drivers/STM32G4xx_HAL_Driver/
 Drivers/CMSIS/Device/ST/STM32G4xx/

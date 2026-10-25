@@ -16,11 +16,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-arm-none-eabi cppcheck
 
-      # Drivers/ and Middlewares/FreeRTOS-Kernel are not part of this repo:
-      # the HAL/CMSIS trees are gitignored (see README "first time"), and
-      # FreeRTOS-Kernel is a bare gitlink pinned to d3b074a. Fetch both at
-      # the versions the firmware is built against.
-      - name: Fetch HAL / CMSIS / FreeRTOS
+      # The HAL/CMSIS trees are gitignored (see README "first time");
+      # FreeRTOS-Kernel is vendored in this repo.
+      - name: Fetch HAL / CMSIS
         run: |
           git clone --depth 1 https://github.com/STMicroelectronics/stm32g4xx_hal_driver.git Drivers/STM32G4xx_HAL_Driver
           git clone --depth 1 https://github.com/STMicroelectronics/cmsis_device_g4.git Drivers/CMSIS/Device/ST/STM32G4xx
@@ -28,8 +26,6 @@ jobs:
           git -C /tmp/CMSIS_5 sparse-checkout set CMSIS/Core/Include
           mkdir -p Drivers/CMSIS
           ln -s /tmp/CMSIS_5/CMSIS/Core/Include Drivers/CMSIS/Include
-          git clone https://github.com/FreeRTOS/FreeRTOS-Kernel.git Middlewares/FreeRTOS-Kernel
-          git -C Middlewares/FreeRTOS-Kernel checkout d3b074a01eb1b8959c7305ab69f2dd95828067c8
 
       - name: Build app + bootloader
         run: |
